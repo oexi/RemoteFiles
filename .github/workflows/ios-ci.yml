@@ -25,17 +25,21 @@ jobs:
       - name: Select and verify Xcode 26
         run: |
           set -euo pipefail
-          CURRENT="$(xcodebuild -version | head -n 1)"
+          VERSION_OUTPUT="$(xcodebuild -version)"
+          CURRENT="${VERSION_OUTPUT%%$'\n'*}"
           if ! grep -Eq '^Xcode 26([.]|$)' <<< "$CURRENT"; then
             XCODE_APP="$(find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' -print | sort -V | tail -n 1)"
             if [ -z "$XCODE_APP" ]; then
               echo "Xcode 26 is required but was not found." >&2
+              printf '%s\n' "$VERSION_OUTPUT" >&2
               exit 1
             fi
             sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+            VERSION_OUTPUT="$(xcodebuild -version)"
+            CURRENT="${VERSION_OUTPUT%%$'\n'*}"
           fi
-          xcodebuild -version | tee xcode-version.log
-          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 26([.]|$)'
+          printf '%s\n' "$VERSION_OUTPUT" | tee xcode-version.log
+          grep -Eq '^Xcode 26([.]|$)' <<< "$CURRENT"
 
       - name: Install XcodeGen
         run: brew install xcodegen
