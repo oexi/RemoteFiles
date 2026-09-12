@@ -88,7 +88,6 @@ jobs:
           EXT_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT/Info.plist")"
           APP_BUNDLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
           EXT_BUNDLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
-          APP_ICON="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$APP/Info.plist")"
           EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")"
           EXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist")"
           test "$APP_VERSION" = "${{ steps.version.outputs.version }}"
@@ -97,8 +96,9 @@ jobs:
           test "$EXT_BUILD" = "$APP_BUILD"
           test "$APP_BUNDLE" = "com.oexi.RemoteFiles"
           test "$EXT_BUNDLE" = "com.oexi.RemoteFiles.FileProvider"
-          test "$APP_ICON" = "AppIcon"
           test -f "$APP/Assets.car"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles' "$APP/Info.plist" | grep -F 'AppIcon'
+          compgen -G "$APP/AppIcon*.png" >/dev/null
           test "$EXT_POINT" = "com.apple.fileprovider-nonui"
           [[ "$EXT_CLASS" == *FileProviderExtension ]]
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionFileProviderSupportsEnumeration' "$EXT/Info.plist" | grep -Fx 'true'
