@@ -131,4 +131,11 @@ targets:
       - path: RemoteFilesTests
     dependencies:
       - target: RemoteFiles
+  RemoteFilesUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: RemoteFilesUITests
+    dependencies:
+      - target: RemoteFiles
 

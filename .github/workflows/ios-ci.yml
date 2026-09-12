@@ -22,8 +22,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Select and verify Xcode 26
+        run: |
+          set -euo pipefail
+          CURRENT="$(xcodebuild -version | head -n 1)"
+          if ! grep -Eq '^Xcode 26([.]|$)' <<< "$CURRENT"; then
+            XCODE_APP="$(find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' -print | sort -V | tail -n 1)"
+            if [ -z "$XCODE_APP" ]; then
+              echo "Xcode 26 is required but was not found." >&2
+              exit 1
+            fi
+            sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          fi
+          xcodebuild -version | tee xcode-version.log
+          xcodebuild -version | head -n 1 | grep -Eq '^Xcode 26([.]|$)'
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -81,11 +93,18 @@ jobs:
             -scheme RemoteFiles \
             -configuration Debug \
             -derivedDataPath .derivedData \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build \
+            build-for-testing \
             | tee build.log
+
+      - name: Boot iOS 26 Simulator
+        run: |
+          set -euo pipefail
+          xcrun simctl shutdown all || true
+          xcrun simctl boot "${{ steps.simulator.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
 
       - name: Run unit tests
         run: |
@@ -98,8 +117,28 @@ jobs:
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            test \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
+            test-without-building \
             | tee test.log
+
+      - name: Launch app on iOS 26
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project RemoteFiles.xcodeproj \
+            -scheme RemoteFiles \
+            -configuration Debug \
+            -derivedDataPath .derivedData \
+            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            -parallel-testing-enabled NO \
+            -only-testing:RemoteFilesUITests/LaunchTests/testLaunchesOnIOS26 \
+            test-without-building \
+            | tee ui-smoke.log
 
       - name: Upload CI logs
         if: always()
@@ -110,4 +149,6 @@ jobs:
             resolve-packages.log
             build.log
             test.log
+            ui-smoke.log
+            xcode-version.log
           if-no-files-found: ignore
