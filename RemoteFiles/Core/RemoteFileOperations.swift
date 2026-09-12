@@ -23,8 +23,12 @@ enum RemoteFileOperations {
             return
         }
 
-        let tempURL = try await CacheManager.shared.temporaryURL(fileName: item.name)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFiles-Clipboard", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        let tempURL = tempRoot.appendingPathComponent(item.name)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
         try await source.download(path: item.path, to: tempURL)
         try Task.checkCancellation()
         try await destination.upload(from: tempURL, to: destinationPath, overwrite: false)
