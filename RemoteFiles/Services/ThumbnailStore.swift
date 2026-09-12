@@ -43,7 +43,7 @@ final class ThumbnailStore {
                 scale: UIScreen.main.scale,
                 representationTypes: .thumbnail
             )
-            let representation = try await withCheckedThrowingContinuation { continuation in
+            let representation: QLThumbnailRepresentation = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<QLThumbnailRepresentation, Error>) in
                 QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { representation, error in
                     if let error { continuation.resume(throwing: error) }
                     else if let representation { continuation.resume(returning: representation) }
@@ -52,7 +52,7 @@ final class ThumbnailStore {
             }
             let image = representation.uiImage
             memory.setObject(image, forKey: key as NSString)
-            if let data = image.pngData() { try? data.write(to: diskURL, options: .atomic) }
+            if let data = image.pngData() { try? data.write(to: diskURL, options: Data.WritingOptions.atomic) }
             return image
         } catch {
             return nil
