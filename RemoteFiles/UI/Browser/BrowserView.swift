@@ -246,9 +246,10 @@ struct BrowserView: View {
 
     private var emptyFolderArea: some View {
         ZStack {
-            EmptyFolderRefreshView {
-                await model.refresh()
-            }
+            EmptyFolderRefreshView(
+                onRefresh: { await model.refresh() },
+                onTap: { searchFocused = false }
+            )
 
             if model.loading {
                 ProgressView()
