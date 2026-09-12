@@ -13,7 +13,9 @@ final class ConnectionStore: ObservableObject {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         fileURL = directory.appendingPathComponent("connections.json")
         load()
-        FileProviderDomainManager.registerAll(profiles)
+        if Self.shouldManageFileProviderDomains {
+            FileProviderDomainManager.registerAll(profiles)
+        }
     }
 
     func upsert(_ profile: ConnectionProfile) {
@@ -24,14 +26,18 @@ final class ConnectionStore: ObservableObject {
         }
         profiles.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         persist()
-        FileProviderDomainManager.register(profile)
+        if Self.shouldManageFileProviderDomains {
+            FileProviderDomainManager.register(profile)
+        }
     }
 
     func remove(_ profile: ConnectionProfile) {
         profiles.removeAll { $0.id == profile.id }
         CredentialVault.shared.remove(for: profile.id)
         persist()
-        FileProviderDomainManager.remove(profile)
+        if Self.shouldManageFileProviderDomains {
+            FileProviderDomainManager.remove(profile)
+        }
     }
 
     private func load() {
@@ -43,6 +49,12 @@ final class ConnectionStore: ObservableObject {
     private func persist() {
         guard let data = try? JSONEncoder().encode(profiles) else { return }
         try? data.write(to: fileURL, options: .atomic)
+    }
+
+    private static var shouldManageFileProviderDomains: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] == nil
+            && environment["XCTestBundlePath"] == nil
     }
 }
 
