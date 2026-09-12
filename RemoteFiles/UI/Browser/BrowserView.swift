@@ -1,15 +1,14 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct BrowserView: View {
     private enum ImportSelection {
         case files
         case folder
 
-        var allowedContentTypes: [UTType] {
+        var pickerMode: SystemDocumentPicker.Mode {
             switch self {
-            case .files: return [.item]
-            case .folder: return [.folder]
+            case .files: return .files
+            case .folder: return .folder
             }
         }
     }
@@ -73,15 +72,18 @@ struct BrowserView: View {
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "Unknown error") }
-        .fileImporter(
-            isPresented: $showingImporter,
-            allowedContentTypes: importSelection.allowedContentTypes,
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls): Task { await model.upload(localURLs: urls) }
-            case .failure(let error): model.errorMessage = error.localizedDescription
-            }
+        .sheet(isPresented: $showingImporter) {
+            SystemDocumentPicker(
+                mode: importSelection.pickerMode,
+                onPick: { urls in
+                    showingImporter = false
+                    Task { await model.upload(localURLs: urls) }
+                },
+                onCancel: {
+                    showingImporter = false
+                }
+            )
+            .ignoresSafeArea()
         }
         .alert("Rename", isPresented: Binding(
             get: { renameItem != nil },
@@ -140,11 +142,37 @@ struct BrowserView: View {
         .background(.bar)
     }
 
+    @ViewBuilder
     private var fileList: some View {
-        List {
-            if model.loading && model.items.isEmpty {
-                HStack { Spacer(); ProgressView(); Spacer() }
+        if model.items.isEmpty {
+            emptyFolderArea
+        } else {
+            populatedFileList
+        }
+    }
+
+    private var emptyFolderArea: some View {
+        ZStack {
+            EmptyFolderRefreshView {
+                await model.refresh()
             }
+
+            if model.loading {
+                ProgressView()
+            } else if model.errorMessage == nil {
+                ContentUnavailableView(
+                    "Empty Folder",
+                    systemImage: "folder",
+                    description: Text(model.currentPath)
+                )
+                .allowsHitTesting(false)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var populatedFileList: some View {
+        List {
             ForEach(visibleItems) { item in
                 itemRow(item)
                     .swipeActions(edge: .trailing) {
@@ -174,11 +202,6 @@ struct BrowserView: View {
                         Spacer()
                     }
                 }
-            }
-        }
-        .overlay {
-            if !model.loading && model.items.isEmpty && model.errorMessage == nil {
-                ContentUnavailableView("Empty Folder", systemImage: "folder", description: Text(model.currentPath))
             }
         }
         .refreshable { await model.refresh() }
