@@ -78,8 +78,22 @@ jobs:
         run: |
           set -euo pipefail
           APP=".derivedData-release/Build/Products/Release-iphoneos/RemoteFiles.app"
+          EXT="$APP/PlugIns/RemoteFilesFileProvider.appex"
           test -d "$APP"
-          test -d "$APP/PlugIns/RemoteFilesFileProvider.appex"
+          test -d "$EXT"
+
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")"
+          APP_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")"
+          EXT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$EXT/Info.plist")"
+          EXT_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT/Info.plist")"
+          APP_BUNDLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
+          EXT_BUNDLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
+          test "$APP_VERSION" = "${{ steps.version.outputs.version }}"
+          test "$EXT_VERSION" = "$APP_VERSION"
+          test "$APP_BUILD" = "${{ steps.version.outputs.build }}"
+          test "$EXT_BUILD" = "$APP_BUILD"
+          test "$APP_BUNDLE" = "com.oexi.RemoteFiles"
+          test "$EXT_BUNDLE" = "com.oexi.RemoteFiles.FileProvider"
           mkdir -p dist/Payload
           cp -R "$APP" dist/Payload/
           IPA="RemoteFiles-${{ steps.version.outputs.version }}-build${{ steps.version.outputs.build }}-unsigned.ipa"

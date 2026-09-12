@@ -125,6 +125,7 @@ jobs:
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 120 \
             -maximum-test-execution-time-allowance 300 \
+            -only-testing:RemoteFilesTests \
             test-without-building \
             | tee test.log
 

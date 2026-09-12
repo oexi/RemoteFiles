@@ -14,6 +14,8 @@ settings:
     SUPPORTS_MACCATALYST: NO
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_CFBundleDisplayName: RemoteFiles
+    INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
+    INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
     INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
     INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
     INFOPLIST_KEY_UIFileSharingEnabled: YES
