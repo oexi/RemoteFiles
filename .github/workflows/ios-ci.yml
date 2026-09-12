@@ -52,6 +52,8 @@ jobs:
         with:
           path: .derivedData
           key: ios-derived-${{ runner.arch }}-${{ hashFiles('project.yml') }}
+          restore-keys: |
+            ios-derived-${{ runner.arch }}-
 
       - name: Resolve Swift packages
         run: |
