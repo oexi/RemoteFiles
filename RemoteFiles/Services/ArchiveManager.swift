@@ -194,11 +194,11 @@ enum ArchiveManager {
         }
     }
 
-    private static func validatePaths(in archive: Archive, destination: URL) throws {
+    private static func validatePaths(in archive: ZIPFoundation.Archive, destination: URL) throws {
         for entry in archive { try validate(entry: entry, destination: destination) }
     }
 
-    private static func validate(entry: Entry, destination: URL) throws {
+    private static func validate(entry: ZIPFoundation.Entry, destination: URL) throws {
         try validate(path: entry.path, destination: destination)
     }
 
