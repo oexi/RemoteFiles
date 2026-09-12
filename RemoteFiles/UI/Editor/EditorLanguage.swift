@@ -51,26 +51,26 @@ enum EditorLanguage {
             return .bash
         }
         switch (fileName as NSString).pathExtension.lowercased() {
-        case "swift": .swift
-        case "c", "h": .c
-        case "cpp", "cc", "cxx", "hpp": .cpp
-        case "css": .css
-        case "go": .go
-        case "html", "htm": .html
-        case "java": .java
-        case "js", "mjs", "cjs", "jsx": .javaScript
-        case "json": .json
-        case "md": .markdown
-        case "php": .php
-        case "py": .python
-        case "rs": .rust
-        case "sql": .sql
-        case "toml": .toml
-        case "ts": .typeScript
-        case "tsx": .tsx
-        case "yaml", "yml": .yaml
-        case "sh", "bash", "zsh": .bash
-        default: nil
+        case "swift": return .swift
+        case "c", "h": return .c
+        case "cpp", "cc", "cxx", "hpp": return .cpp
+        case "css": return .css
+        case "go": return .go
+        case "html", "htm": return .html
+        case "java": return .java
+        case "js", "mjs", "cjs", "jsx": return .javaScript
+        case "json": return .json
+        case "md": return .markdown
+        case "php": return .php
+        case "py": return .python
+        case "rs": return .rust
+        case "sql": return .sql
+        case "toml": return .toml
+        case "ts": return .typeScript
+        case "tsx": return .tsx
+        case "yaml", "yml": return .yaml
+        case "sh", "bash", "zsh": return .bash
+        default: return nil
         }
     }
 }
