@@ -41,7 +41,7 @@ enum ArchiveManager {
             throw RemoteProviderError.invalidResponse("Archive entry does not exist.")
         }
         try validate(entry: entry, destination: destination.deletingLastPathComponent())
-        try archive.extract(entry, to: destination)
+        _ = try archive.extract(entry, to: destination)
     }
 
     static func createZIP(from source: URL, at destination: URL) throws {

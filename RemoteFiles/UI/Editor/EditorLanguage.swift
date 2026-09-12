@@ -1,3 +1,4 @@
+import Foundation
 import Runestone
 import TreeSitterBashRunestone
 import TreeSitterCRunestone

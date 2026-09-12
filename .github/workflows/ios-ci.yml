@@ -31,6 +31,12 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Restore Xcode build cache
+        uses: actions/cache@v4
+        with:
+          path: .derivedData
+          key: ios-derived-${{ runner.arch }}-${{ hashFiles('project.yml') }}
+
       - name: Resolve Swift packages
         run: |
           set -o pipefail
@@ -38,6 +44,7 @@ jobs:
             -resolvePackageDependencies \
             -project RemoteFiles.xcodeproj \
             -scheme RemoteFiles \
+            -derivedDataPath .derivedData \
             | tee resolve-packages.log
 
       - name: Select simulator
@@ -73,6 +80,7 @@ jobs:
             -project RemoteFiles.xcodeproj \
             -scheme RemoteFiles \
             -configuration Debug \
+            -derivedDataPath .derivedData \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -86,6 +94,7 @@ jobs:
             -project RemoteFiles.xcodeproj \
             -scheme RemoteFiles \
             -configuration Debug \
+            -derivedDataPath .derivedData \
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
