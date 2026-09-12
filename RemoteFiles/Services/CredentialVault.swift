@@ -4,6 +4,23 @@ import Security
 struct Credential: Sendable {
     let username: String
     let password: String
+    let privateKey: Data?
+    let privateKeyName: String?
+    let privateKeyPassphrase: String?
+
+    init(
+        username: String,
+        password: String,
+        privateKey: Data? = nil,
+        privateKeyName: String? = nil,
+        privateKeyPassphrase: String? = nil
+    ) {
+        self.username = username
+        self.password = password
+        self.privateKey = privateKey
+        self.privateKeyName = privateKeyName
+        self.privateKeyPassphrase = privateKeyPassphrase
+    }
 }
 
 final class CredentialVault: @unchecked Sendable {
@@ -12,7 +29,13 @@ final class CredentialVault: @unchecked Sendable {
 
     func save(_ credential: Credential, for profileID: UUID) throws {
         let account = profileID.uuidString
-        let payload = try JSONEncoder().encode(Payload(username: credential.username, password: credential.password))
+        let payload = try JSONEncoder().encode(Payload(
+            username: credential.username,
+            password: credential.password,
+            privateKey: credential.privateKey,
+            privateKeyName: credential.privateKeyName,
+            privateKeyPassphrase: credential.privateKeyPassphrase
+        ))
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -39,7 +62,13 @@ final class CredentialVault: @unchecked Sendable {
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw VaultError.status(status) }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
-        return Credential(username: payload.username, password: payload.password)
+        return Credential(
+            username: payload.username,
+            password: payload.password,
+            privateKey: payload.privateKey,
+            privateKeyName: payload.privateKeyName,
+            privateKeyPassphrase: payload.privateKeyPassphrase
+        )
     }
 
     func remove(for profileID: UUID) {
@@ -54,6 +83,9 @@ final class CredentialVault: @unchecked Sendable {
     private struct Payload: Codable {
         let username: String
         let password: String
+        let privateKey: Data?
+        let privateKeyName: String?
+        let privateKeyPassphrase: String?
     }
 
     enum VaultError: LocalizedError {

@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 45
 
     steps:
@@ -60,7 +60,7 @@ jobs:
           ]))
 
           for runtime, devices in payload.get("devices", {}).items():
-              if "iOS" not in runtime:
+              if "iOS-26" not in runtime:
                   continue
               for device in devices:
                   if device.get("isAvailable") and device.get("name", "").startswith("iPhone"):

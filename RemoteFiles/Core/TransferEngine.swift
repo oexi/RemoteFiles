@@ -12,7 +12,7 @@ final class TransferEngine: ObservableObject {
         destinationPath: String,
         overwrite: Bool = false
     ) {
-        var record = TransferRecord(
+        let record = TransferRecord(
             fileName: item.name,
             source: "\(source.profile.name):\(item.path)",
             destination: "\(destination.profile.name):\(destinationPath)"

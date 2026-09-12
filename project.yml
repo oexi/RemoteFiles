@@ -34,6 +34,9 @@ packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
     revision: ae8562f895de06ccb86fdb1cbb65fd99c8976e12
+  SwiftCrypto:
+    url: https://github.com/apple/swift-crypto.git
+    revision: e8d6eba1fef23ae5b359c46b03f7d94be2f41fed
   NIOSSH:
     url: https://github.com/Wellz26/swift-nio-ssh.git
     revision: b93961a2988607a756cbc21a811f406f27aa9ab6
@@ -62,6 +65,8 @@ targets:
       - package: NFSKit
       - package: FilesProvider
       - package: Citadel
+      - package: SwiftCrypto
+        product: Crypto
       - package: NIOSSH
         product: NIOSSH
       - package: SwiftNIO

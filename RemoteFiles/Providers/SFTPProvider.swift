@@ -1,4 +1,5 @@
 import Citadel
+import Crypto
 import Foundation
 import NIOCore
 
@@ -17,14 +18,15 @@ final class SFTPProvider: RemoteFileProvider, @unchecked Sendable {
 
     func connect() async throws {
         let username = credential?.username ?? profile.username
-        guard !username.isEmpty, let password = credential?.password else {
+        guard !username.isEmpty else {
             throw RemoteProviderError.authenticationRequired
         }
+        let authentication = try makeAuthentication(username: username)
         let validator = TOFUHostKeyValidator(host: profile.host, port: profile.port)
         let settings = SSHClientSettings(
             host: profile.host,
             port: profile.port,
-            authenticationMethod: { .passwordBased(username: username, password: password) },
+            authenticationMethod: { authentication },
             hostKeyValidator: .custom(validator)
         )
         let ssh = try await SSHClient.connect(to: settings)
@@ -135,6 +137,32 @@ final class SFTPProvider: RemoteFileProvider, @unchecked Sendable {
         try await connect()
         guard let sftp else { throw RemoteProviderError.notConnected }
         return sftp
+    }
+
+    private func makeAuthentication(username: String) throws -> SSHAuthenticationMethod {
+        if let privateKey = credential?.privateKey, !privateKey.isEmpty {
+            guard let keyString = String(data: privateKey, encoding: .utf8) else {
+                throw RemoteProviderError.invalidConfiguration("The SFTP private key is not valid UTF-8 text.")
+            }
+            let passphrase = credential?.privateKeyPassphrase.flatMap { value in
+                value.isEmpty ? nil : Data(value.utf8)
+            }
+            let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyString)
+            if keyType == .ed25519 {
+                let key = try Curve25519.Signing.PrivateKey(sshEd25519: keyString, decryptionKey: passphrase)
+                return .ed25519(username: username, privateKey: key)
+            }
+            if keyType == .rsa {
+                let key = try Insecure.RSA.PrivateKey(sshRsa: keyString, decryptionKey: passphrase)
+                return .rsa(username: username, privateKey: key)
+            }
+            throw RemoteProviderError.unsupported("This OpenSSH private-key type is not supported yet. Use Ed25519 or RSA.")
+        }
+
+        guard let password = credential?.password, !password.isEmpty else {
+            throw RemoteProviderError.authenticationRequired
+        }
+        return .passwordBased(username: username, password: password)
     }
 
     private static func kind(from permissions: UInt32?) -> RemoteItemKind {

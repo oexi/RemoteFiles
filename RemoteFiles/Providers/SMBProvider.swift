@@ -30,8 +30,8 @@ final class SMBProvider: RemoteFileProvider, @unchecked Sendable {
 
     func disconnect() async {
         guard connected else { return }
-        try? await client.disconnectShare()
-        try? await client.logoff()
+        _ = try? await client.disconnectShare()
+        _ = try? await client.logoff()
         connected = false
     }
 

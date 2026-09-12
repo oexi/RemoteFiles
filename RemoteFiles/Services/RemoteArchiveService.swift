@@ -12,16 +12,7 @@ enum RemoteArchiveService {
         try ArchiveManager.extract(archiveURL, to: tempRoot)
 
         let destinationRoot = RemotePath.parent(item.path)
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
-        guard let enumerator = FileManager.default.enumerator(at: tempRoot, includingPropertiesForKeys: keys) else { return }
-
-        var directories: [URL] = []
-        var files: [URL] = []
-        for case let url as URL in enumerator {
-            let values = try url.resourceValues(forKeys: Set(keys))
-            if values.isDirectory == true { directories.append(url) }
-            else if values.isRegularFile == true { files.append(url) }
-        }
+        let (directories, files) = try extractedItems(under: tempRoot)
 
         for directory in directories.sorted(by: { $0.pathComponents.count < $1.pathComponents.count }) {
             let relative = relativePath(directory, under: tempRoot)
@@ -32,6 +23,21 @@ enum RemoteArchiveService {
             let relative = relativePath(file, under: tempRoot)
             try await provider.upload(from: file, to: RemotePath.join(destinationRoot, relative), overwrite: true)
         }
+    }
+
+    private static func extractedItems(under root: URL) throws -> (directories: [URL], files: [URL]) {
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys) else {
+            return ([], [])
+        }
+        var directories: [URL] = []
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: Set(keys))
+            if values.isDirectory == true { directories.append(url) }
+            else if values.isRegularFile == true { files.append(url) }
+        }
+        return (directories, files)
     }
 
     private static func relativePath(_ url: URL, under root: URL) -> String {
