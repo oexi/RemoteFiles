@@ -6,6 +6,7 @@ struct RemotePreviewView: View {
 
     @State private var localURL: URL?
     @State private var errorMessage: String?
+    @State private var showingShare = false
 
     var body: some View {
         Group {
@@ -22,10 +23,20 @@ struct RemotePreviewView: View {
         .toolbar {
             if let localURL {
                 ToolbarItem(placement: .primaryAction) {
-                    ShareLink(item: localURL) {
+                    Button {
+                        showingShare = true
+                    } label: {
                         Label("Share", systemImage: "square.and.arrow.up")
                     }
                 }
+            }
+        }
+        .sheet(isPresented: $showingShare) {
+            if let localURL {
+                SystemShareSheet(urls: [localURL]) {
+                    showingShare = false
+                }
+                .ignoresSafeArea()
             }
         }
         .task {

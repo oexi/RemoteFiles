@@ -7,6 +7,7 @@ struct OfflineDetailView: View {
     let item: OfflineItem
 
     @State private var showingExporter = false
+    @State private var showingShare = false
     @State private var showingDestinations = false
     @State private var working = false
     @State private var message: String?
@@ -27,7 +28,9 @@ struct OfflineDetailView: View {
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
                 if let externalURL {
-                    ShareLink(item: externalURL) {
+                    Button {
+                        showingShare = true
+                    } label: {
                         Label("Share", systemImage: "square.and.arrow.up")
                     }
                 }
@@ -49,6 +52,14 @@ struct OfflineDetailView: View {
             if let externalURL {
                 SystemDocumentExporter(urls: [externalURL]) { showingExporter = false }
                     .ignoresSafeArea()
+            }
+        }
+        .sheet(isPresented: $showingShare) {
+            if let externalURL {
+                SystemShareSheet(urls: [externalURL]) {
+                    showingShare = false
+                }
+                .ignoresSafeArea()
             }
         }
         .sheet(isPresented: $showingDestinations) {

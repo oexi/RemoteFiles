@@ -28,4 +28,24 @@ final class ArchiveManagerTests: XCTestCase {
         let extracted = destination.appendingPathComponent("source.txt")
         XCTAssertEqual(try String(contentsOf: extracted, encoding: .utf8), "hello")
     }
+
+    func testZipDirectoryRoundTripExtraction() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesArchiveDirectoryTest-\(UUID().uuidString)", isDirectory: true)
+        let source = root.appendingPathComponent("uu-plugin-backup", isDirectory: true)
+        let nested = source.appendingPathComponent("files/usr/bin", isDirectory: true)
+        let sourceFile = nested.appendingPathComponent("helper")
+        let archive = root.appendingPathComponent("uu-plugin-backup.zip")
+        let destination = root.appendingPathComponent("extracted", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data("#!/bin/sh\necho ok\n".utf8).write(to: sourceFile)
+        try ArchiveManager.createZIP(from: source, at: archive)
+        try ArchiveManager.extract(archive, originalName: "uu-plugin-backup.zip", to: destination)
+
+        let extracted = destination
+            .appendingPathComponent("uu-plugin-backup/files/usr/bin/helper")
+        XCTAssertEqual(try String(contentsOf: extracted, encoding: .utf8), "#!/bin/sh\necho ok\n")
+    }
 }

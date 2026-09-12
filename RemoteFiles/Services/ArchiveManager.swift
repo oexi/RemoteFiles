@@ -82,8 +82,25 @@ enum ArchiveManager {
         switch format {
         case .zip:
             let archive = try Archive(url: archiveURL, accessMode: .read)
-            try validatePaths(in: archive, destination: destination)
-            try FileManager.default.unzipItem(at: archiveURL, to: destination)
+            for entry in archive {
+                let relativePath = try validatedRelativePath(entry.path)
+                guard !relativePath.isEmpty else { continue }
+                let target = destination.appendingPathComponent(relativePath)
+                switch entry.type {
+                case .directory:
+                    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+                case .symlink:
+                    // Never materialize links from untrusted archives. A valid-looking entry path can
+                    // still point outside the extraction root through the link target.
+                    continue
+                case .file:
+                    try FileManager.default.createDirectory(
+                        at: target.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                    _ = try archive.extract(entry, to: target)
+                }
+            }
         case .sevenZip:
             let entries = try SevenZipContainer.open(container: Data(contentsOf: archiveURL))
             try extract(entries: entries.map { ($0.info.name, remoteKind($0.info.type), $0.data) }, to: destination)
@@ -93,8 +110,8 @@ enum ArchiveManager {
             let entries = try TarContainer.open(container: decodedTarData(at: archiveURL, format: format))
             try extract(entries: entries.map { ($0.info.name, remoteKind($0.info.type), $0.data) }, to: destination)
         case .gzip, .bzip2, .xz:
-            let output = destination.appendingPathComponent(outputName(for: originalName))
-            try validate(path: output.lastPathComponent, destination: destination)
+            let relativePath = try validatedRelativePath(outputName(for: originalName))
+            let output = destination.appendingPathComponent(relativePath)
             try decodeSingleFile(at: archiveURL, format: format).write(to: output, options: .atomic)
         }
     }
@@ -104,7 +121,7 @@ enum ArchiveManager {
         guard let entry = archive[entryPath] else {
             throw RemoteProviderError.invalidResponse("Archive entry does not exist.")
         }
-        try validate(entry: entry, destination: destination.deletingLastPathComponent())
+        _ = try validatedRelativePath(entry.path)
         _ = try archive.extract(entry, to: destination)
     }
 
@@ -178,8 +195,9 @@ enum ArchiveManager {
 
     private static func extract(entries: [(String, RemoteItemKind, Data?)], to destination: URL) throws {
         for (path, kind, data) in entries {
-            try validate(path: path, destination: destination)
-            let target = destination.appendingPathComponent(path)
+            let relativePath = try validatedRelativePath(path)
+            guard !relativePath.isEmpty else { continue }
+            let target = destination.appendingPathComponent(relativePath)
             switch kind {
             case .directory:
                 try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
@@ -194,20 +212,35 @@ enum ArchiveManager {
         }
     }
 
-    private static func validatePaths(in archive: ZIPFoundation.Archive, destination: URL) throws {
-        for entry in archive { try validate(entry: entry, destination: destination) }
-    }
-
-    private static func validate(entry: ZIPFoundation.Entry, destination: URL) throws {
-        try validate(path: entry.path, destination: destination)
-    }
-
-    private static func validate(path: String, destination: URL) throws {
-        let root = destination.standardizedFileURL.path
-        let target = destination.appendingPathComponent(path).standardizedFileURL.path
-        guard target == root || target.hasPrefix(root + "/") else {
+    /// Converts an archive member name to a safe relative path. This deliberately validates the
+    /// archive name itself instead of comparing absolute temporary-directory paths, which can differ
+    /// on iOS because of path canonicalisation and container aliases.
+    private static func validatedRelativePath(_ path: String) throws -> String {
+        guard !path.contains("\0") else {
             throw RemoteProviderError.invalidResponse("Blocked an unsafe archive path: \(path)")
         }
+
+        let normalized = path.replacingOccurrences(of: "\\", with: "/")
+        guard !normalized.hasPrefix("/") else {
+            throw RemoteProviderError.invalidResponse("Blocked an unsafe archive path: \(path)")
+        }
+
+        let rawComponents = normalized.split(separator: "/", omittingEmptySubsequences: false)
+        var components: [Substring] = []
+        for component in rawComponents {
+            if component.isEmpty || component == "." { continue }
+            guard component != ".." else {
+                throw RemoteProviderError.invalidResponse("Blocked an unsafe archive path: \(path)")
+            }
+            if components.isEmpty,
+               component.count == 2,
+               component.last == ":",
+               component.first?.isLetter == true {
+                throw RemoteProviderError.invalidResponse("Blocked an unsafe archive path: \(path)")
+            }
+            components.append(component)
+        }
+        return components.joined(separator: "/")
     }
 }
 

@@ -2,6 +2,10 @@ import Foundation
 import SwiftUI
 
 struct BrowserView: View {
+    @EnvironmentObject private var connections: ConnectionStore
+    @EnvironmentObject private var transfers: TransferEngine
+    @EnvironmentObject private var offline: OfflineStore
+
     private enum ImportSelection {
         case files
         case folder
@@ -28,7 +32,10 @@ struct BrowserView: View {
     @State private var showingBatchDeleteConfirmation = false
     @State private var permissionItem: RemoteItem?
     @State private var accessControlItem: RemoteItem?
+    @State private var copyItem: RemoteItem?
     @State private var pendingDeleteItem: RemoteItem?
+    @State private var offlineWorkingPath: String?
+    @FocusState private var searchFocused: Bool
 
     init(profile: ConnectionProfile) {
         _model = StateObject(wrappedValue: BrowserViewModel(profile: profile))
@@ -159,6 +166,29 @@ struct BrowserView: View {
                 AccessControlView(provider: provider, item: item)
             }
         }
+        .sheet(item: $copyItem) { item in
+            if let provider = model.provider {
+                CopyDestinationView(
+                    profiles: connections.profiles.filter { $0.id != provider.profile.id },
+                    fileName: item.name
+                ) { destination in
+                    do {
+                        let destinationProvider = try ProviderFactory.make(for: destination)
+                        transfers.copyFile(
+                            item: item,
+                            from: provider,
+                            to: destinationProvider,
+                            destinationPath: RemotePath.join(
+                                RemotePath.normalize(destination.initialPath),
+                                item.name
+                            )
+                        )
+                    } catch {
+                        model.errorMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
     }
 
     private var browserHeader: some View {
@@ -183,6 +213,8 @@ struct BrowserView: View {
                 TextField("Search this folder", text: $searchText)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .focused($searchFocused)
+                    .submitLabel(.search)
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
@@ -230,6 +262,8 @@ struct BrowserView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { searchFocused = false }
     }
 
     private var populatedFileList: some View {
@@ -246,6 +280,9 @@ struct BrowserView: View {
                     .buttonStyle(.plain)
                 } else {
                     itemRow(item)
+                        .contextMenu {
+                            itemContextMenu(item)
+                        }
                         .swipeActions(edge: .trailing) {
                             if model.capabilities.contains(.delete) {
                                 Button(role: .destructive) {
@@ -299,6 +336,8 @@ struct BrowserView: View {
             }
         }
         .refreshable { await model.refresh() }
+        .scrollDismissesKeyboard(.interactively)
+        .simultaneousGesture(TapGesture().onEnded { searchFocused = false })
     }
 
     private var selectionBar: some View {
@@ -336,6 +375,73 @@ struct BrowserView: View {
     private func endSelection() {
         selectionMode = false
         selectedPaths.removeAll()
+    }
+
+    @ViewBuilder
+    private func itemContextMenu(_ item: RemoteItem) -> some View {
+        Button("Select", systemImage: "checkmark.circle") {
+            selectionMode = true
+            selectedPaths = [item.path]
+            searchFocused = false
+        }
+
+        if !item.isDirectory, let provider = model.provider {
+            Button(
+                offline.isPinned(profileID: provider.profile.id, path: item.path) ? "Remove Offline Copy" : "Keep Offline",
+                systemImage: offline.isPinned(profileID: provider.profile.id, path: item.path) ? "checkmark.circle.fill" : "arrow.down.circle"
+            ) {
+                Task { await toggleOffline(item, provider: provider) }
+            }
+            .disabled(offlineWorkingPath != nil)
+
+            Button("Copy to Server", systemImage: "arrow.right.doc.on.clipboard") {
+                copyItem = item
+            }
+        }
+
+        if model.capabilities.contains(.move) {
+            Button("Rename", systemImage: "pencil") {
+                renameItem = item
+                renameText = item.name
+            }
+        }
+
+        if model.capabilities.contains(.permissions) {
+            Button("Permissions", systemImage: "lock.shield") {
+                permissionItem = item
+            }
+        }
+
+        if model.capabilities.contains(.accessControl) {
+            Button("Access Control", systemImage: "person.badge.key") {
+                accessControlItem = item
+            }
+        }
+
+        if model.capabilities.contains(.delete) {
+            Divider()
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                if item.isDirectory {
+                    pendingDeleteItem = item
+                } else {
+                    Task { await model.delete(item) }
+                }
+            }
+        }
+    }
+
+    private func toggleOffline(_ item: RemoteItem, provider: any RemoteFileProvider) async {
+        offlineWorkingPath = item.path
+        defer { offlineWorkingPath = nil }
+        if offline.isPinned(profileID: provider.profile.id, path: item.path) {
+            offline.unpin(profileID: provider.profile.id, path: item.path)
+            return
+        }
+        do {
+            try await offline.pin(provider: provider, item: item)
+        } catch {
+            model.errorMessage = error.localizedDescription
+        }
     }
 
     private var filteredItems: [RemoteItem] {
