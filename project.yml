@@ -134,6 +134,16 @@ targets:
     platform: iOS
     info:
       path: RemoteFilesFileProvider/Info.plist
+      properties:
+        CFBundleDisplayName: RemoteFiles
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).FileProviderExtension"
+          NSExtensionAttributes:
+            NSExtensionFileProviderDocumentGroup: group.com.oexi.RemoteFiles
+            NSExtensionFileProviderSupportsEnumeration: true
     sources:
       - path: RemoteFilesFileProvider
         excludes:
@@ -162,7 +172,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.oexi.RemoteFiles.FileProvider
         GENERATE_INFOPLIST_FILE: NO
-        INFOPLIST_FILE: RemoteFilesFileProvider/Info.plist
         APPLICATION_EXTENSION_API_ONLY: YES
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: RemoteFilesFileProvider/RemoteFilesFileProvider.entitlements
