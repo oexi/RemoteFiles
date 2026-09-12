@@ -158,7 +158,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 defer { Task { await provider.disconnect() } }
                 let path = try codec.path(for: identifier)
                 let remote = try await provider.attributes(path: path)
-                try await provider.remove(path: path, isDirectory: remote.isDirectory)
+                try await RemoteFileOperations.removeRecursively(remote, provider: provider)
                 progress.completedUnitCount = 100
                 completionHandler(nil)
             } catch {

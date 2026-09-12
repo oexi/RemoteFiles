@@ -56,6 +56,7 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
                 size: kind == .directory ? nil : size,
                 modifiedAt: modified,
                 isHidden: component.filename.hasPrefix("."),
+                permissions: component.attributes.permissions.map { $0 & 0o7777 },
                 revision: .init(modifiedAt: modified, size: size)
             )
         }.sorted {
@@ -77,8 +78,20 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             size: kind == .directory ? nil : size,
             modifiedAt: modified,
             isHidden: name.hasPrefix("."),
+            permissions: attributes.permissions.map { $0 & 0o7777 },
             revision: .init(modifiedAt: modified, size: size)
         )
+    }
+
+    func setPermissions(path: String, permissions: UInt32) async throws {
+        let normalized = RemotePath.normalize(path)
+        do {
+            var attributes = SFTPFileAttributes()
+            attributes.permissions = permissions & 0o7777
+            try await client().setAttributes(at: normalized, to: attributes)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "change permissions on \(normalized)")
+        }
     }
 
     func download(path: String, to localURL: URL) async throws {

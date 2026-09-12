@@ -9,6 +9,7 @@ struct FileDetailView: View {
     let item: RemoteItem
 
     @State private var showingDestinations = false
+    @State private var showingPermissions = false
     @State private var copyError: String?
     @State private var offlineWorking = false
 
@@ -37,6 +38,13 @@ struct FileDetailView: View {
                     showingDestinations = true
                 }
             }
+            if provider.capabilities.contains(.permissions) {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Permissions", systemImage: "lock.shield") {
+                        showingPermissions = true
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showingDestinations) {
             CopyDestinationView(
@@ -62,6 +70,9 @@ struct FileDetailView: View {
         } message: {
             Text(copyError ?? "Unknown error")
         }
+        .sheet(isPresented: $showingPermissions) {
+            PermissionsEditorView(provider: provider, item: item)
+        }
     }
 
     private func toggleOffline() async {
@@ -79,7 +90,7 @@ struct FileDetailView: View {
     }
 }
 
-private struct CopyDestinationView: View {
+struct CopyDestinationView: View {
     @Environment(\.dismiss) private var dismiss
     let profiles: [ConnectionProfile]
     let fileName: String

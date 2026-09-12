@@ -6,12 +6,13 @@ RemoteFiles 是一款面向 iPhone 和 iPad 的多协议远程文件管理器，
 
 - 支持 FTP、FTPS、SFTP、SMB、WebDAV 和 NFS。
 - 浏览远程目录和文件，并查看文件大小、修改时间等信息。
-- 支持上传文件和文件夹、新建文件夹、重命名、删除以及当前目录搜索。
+- 支持上传文件和文件夹、新建文件夹、重命名、递归删除非空目录、批量选择与批量删除，以及当前目录搜索。
 - 支持不同远程服务器之间复制文件，并通过传输列表查看任务状态；传输任务可持久化、取消和失败重试。
 - FTP、SFTP、SMB、WebDAV、NFS 可作为分块读取源；复制到 SFTP 或 SMB 时支持流式传输，避免完整文件占用本地临时空间。
 - SFTP 与 SMB 目标支持字节级断点续传；其他协议在不具备可靠随机写入能力时自动安全回退为重新传输。
 - 使用系统 Quick Look 预览 PDF、图片、文档、音视频及其他受支持的文件格式。
 - 支持预览文件的系统分享/导出，以及将远程文件保持离线。
+- Offline 文件可继续预览、系统分享、导出、复制到远程服务器；离线压缩包可浏览并解压到 Offline。
 - 图片和 PDF 支持按需生成并缓存缩略图。
 - 内置文本与代码编辑器，支持语法高亮、行号和远程文件保存。
 - 支持 Swift、C、C++、Python、JavaScript、TypeScript、TSX、HTML、CSS、JSON、YAML、TOML、Go、Rust、Java、PHP、SQL、Markdown、Shell 等常见语言和格式。
@@ -19,6 +20,7 @@ RemoteFiles 是一款面向 iPhone 和 iPad 的多协议远程文件管理器，
 - 支持 ZIP、7z、RAR/RAR5、TAR、tar.gz、tar.bz2、tar.xz、GZip、BZip2 和 XZ 的浏览或解压。
 - 登录凭据保存在系统 Keychain 中。
 - SFTP 支持密码以及 OpenSSH Ed25519/RSA 私钥认证，可保存私钥 passphrase。
+- SFTP 支持查看 Unix 文件权限，并通过八进制模式修改文件或目录权限。
 - SFTP 首次连接会记录 SSH Host Key，后续密钥发生变化时阻止连接。
 - 内置连接诊断，可检查网络连通、协议认证、目录访问和服务器能力。
 - 可通过系统“文件”App 的 File Provider 集成访问已配置的远程连接，并支持浏览、下载、新建、修改、移动和删除。

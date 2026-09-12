@@ -63,10 +63,28 @@ final class BrowserViewModel: ObservableObject {
 
     func delete(_ item: RemoteItem) async {
         guard let provider else { return }
+        loading = true
+        defer { loading = false }
         do {
-            try await provider.remove(path: item.path, isDirectory: item.isDirectory)
+            try await RemoteFileOperations.removeRecursively(item, provider: provider)
             await refresh()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    func delete(_ items: [RemoteItem]) async {
+        guard let provider, !items.isEmpty else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            for item in items {
+                try Task.checkCancellation()
+                try await RemoteFileOperations.removeRecursively(item, provider: provider)
+            }
+            await refresh()
+        } catch {
+            errorMessage = error.localizedDescription
+            await refresh()
+        }
     }
 
     func rename(_ item: RemoteItem, to newName: String) async {

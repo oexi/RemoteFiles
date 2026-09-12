@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct BrowserView: View {
@@ -22,6 +23,11 @@ struct BrowserView: View {
     @State private var renameItem: RemoteItem?
     @State private var renameText = ""
     @State private var displayLimit = 200
+    @State private var selectionMode = false
+    @State private var selectedPaths: Set<String> = []
+    @State private var showingBatchDeleteConfirmation = false
+    @State private var permissionItem: RemoteItem?
+    @State private var pendingDeleteItem: RemoteItem?
 
     init(profile: ConnectionProfile) {
         _model = StateObject(wrappedValue: BrowserViewModel(profile: profile))
@@ -36,29 +42,48 @@ struct BrowserView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                if model.canGoUp {
-                    Button { Task { await model.goUp() } } label: { Image(systemName: "arrow.up") }
+                if selectionMode {
+                    Button("Done") { endSelection() }
+                } else {
+                    if model.canGoUp {
+                        Button { Task { await model.goUp() } } label: { Image(systemName: "arrow.up") }
+                    }
+                    if model.capabilities.contains(.delete), !model.items.isEmpty {
+                        Button { selectionMode = true } label: {
+                            Image(systemName: "checkmark.circle")
+                        }
+                        .accessibilityLabel("Select Items")
+                    }
+                    Menu {
+                        Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                        if model.capabilities.contains(.createDirectory) {
+                            Button("New Folder", systemImage: "folder.badge.plus") { showingFolderPrompt = true }
+                        }
+                        if model.capabilities.contains(.write) {
+                            Button("Upload Files", systemImage: "square.and.arrow.up") {
+                                importSelection = .files
+                                showingImporter = true
+                            }
+                            Button("Upload Folder", systemImage: "folder.badge.plus") {
+                                importSelection = .folder
+                                showingImporter = true
+                            }
+                        }
+                    } label: { Image(systemName: "ellipsis.circle") }
                 }
-                Menu {
-                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                    if model.capabilities.contains(.createDirectory) {
-                        Button("New Folder", systemImage: "folder.badge.plus") { showingFolderPrompt = true }
-                    }
-                    if model.capabilities.contains(.write) {
-                        Button("Upload Files", systemImage: "square.and.arrow.up") {
-                            importSelection = .files
-                            showingImporter = true
-                        }
-                        Button("Upload Folder", systemImage: "folder.badge.plus") {
-                            importSelection = .folder
-                            showingImporter = true
-                        }
-                    }
-                } label: { Image(systemName: "ellipsis.circle") }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selectionMode { selectionBar }
+        }
         .onChange(of: searchText) { _, _ in displayLimit = 200 }
-        .onChange(of: model.currentPath) { _, _ in displayLimit = 200 }
+        .onChange(of: model.items) { _, items in
+            selectedPaths.formIntersection(Set(items.map(\.path)))
+        }
+        .onChange(of: model.currentPath) { _, _ in
+            displayLimit = 200
+            endSelection()
+        }
         .task { await model.start() }
         .alert("New Folder", isPresented: $showingFolderPrompt) {
             TextField("Folder name", text: $newFolderName)
@@ -98,6 +123,36 @@ struct BrowserView: View {
                 Task { await model.rename(item, to: name) }
             }
         }
+        .alert("Delete Selected Items?", isPresented: $showingBatchDeleteConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                let items = model.items.filter { selectedPaths.contains($0.path) }
+                endSelection()
+                Task { await model.delete(items) }
+            }
+        } message: {
+            Text("This permanently deletes \(selectedPaths.count) selected item(s). Non-empty folders and their contents will also be deleted.")
+        }
+        .alert("Delete Folder?", isPresented: Binding(
+            get: { pendingDeleteItem != nil },
+            set: { if !$0 { pendingDeleteItem = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { pendingDeleteItem = nil }
+            Button("Delete", role: .destructive) {
+                guard let item = pendingDeleteItem else { return }
+                pendingDeleteItem = nil
+                Task { await model.delete(item) }
+            }
+        } message: {
+            Text("This permanently deletes the folder and everything inside it.")
+        }
+        .sheet(item: $permissionItem, onDismiss: {
+            Task { await model.refresh() }
+        }) { item in
+            if let provider = model.provider {
+                PermissionsEditorView(provider: provider, item: item)
+            }
+        }
     }
 
     private var browserHeader: some View {
@@ -109,10 +164,10 @@ struct BrowserView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                if model.uploading {
+                if model.uploading || model.loading {
                     ProgressView()
                         .controlSize(.small)
-                        .accessibilityLabel("Uploading")
+                        .accessibilityLabel(model.uploading ? "Uploading" : "Working")
                 }
             }
 
@@ -174,23 +229,48 @@ struct BrowserView: View {
     private var populatedFileList: some View {
         List {
             ForEach(visibleItems) { item in
-                itemRow(item)
-                    .swipeActions(edge: .trailing) {
-                        if model.capabilities.contains(.delete) {
-                            Button(role: .destructive) { Task { await model.delete(item) } } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                        if model.capabilities.contains(.move) {
-                            Button {
-                                renameItem = item
-                                renameText = item.name
-                            } label: {
-                                Label("Rename", systemImage: "pencil")
-                            }
-                            .tint(.blue)
+                if selectionMode {
+                    Button { toggleSelection(item) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selectedPaths.contains(item.path) ? Color.accentColor : Color.secondary)
+                            FileRow(item: item, provider: model.provider)
                         }
                     }
+                    .buttonStyle(.plain)
+                } else {
+                    itemRow(item)
+                        .swipeActions(edge: .trailing) {
+                            if model.capabilities.contains(.delete) {
+                                Button(role: .destructive) {
+                                    if item.isDirectory {
+                                        pendingDeleteItem = item
+                                    } else {
+                                        Task { await model.delete(item) }
+                                    }
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            if model.capabilities.contains(.move) {
+                                Button {
+                                    renameItem = item
+                                    renameText = item.name
+                                } label: {
+                                    Label("Rename", systemImage: "pencil")
+                                }
+                                .tint(.blue)
+                            }
+                            if model.capabilities.contains(.permissions) {
+                                Button {
+                                    permissionItem = item
+                                } label: {
+                                    Label("Permissions", systemImage: "lock.shield")
+                                }
+                                .tint(.orange)
+                            }
+                        }
+                }
             }
             if filteredItems.count > displayLimit {
                 Button {
@@ -205,6 +285,43 @@ struct BrowserView: View {
             }
         }
         .refreshable { await model.refresh() }
+    }
+
+    private var selectionBar: some View {
+        let filteredPaths = Set(filteredItems.map(\.path))
+        let allFilteredSelected = !filteredPaths.isEmpty && filteredPaths.isSubset(of: selectedPaths)
+        return HStack(spacing: 16) {
+            Button(allFilteredSelected ? "Deselect All" : "Select All") {
+                if allFilteredSelected {
+                    selectedPaths.subtract(filteredPaths)
+                } else {
+                    selectedPaths.formUnion(filteredPaths)
+                }
+            }
+            Spacer()
+            Button(role: .destructive) {
+                showingBatchDeleteConfirmation = true
+            } label: {
+                Label("Delete \(selectedPaths.count)", systemImage: "trash")
+            }
+            .disabled(selectedPaths.isEmpty)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    private func toggleSelection(_ item: RemoteItem) {
+        if selectedPaths.contains(item.path) {
+            selectedPaths.remove(item.path)
+        } else {
+            selectedPaths.insert(item.path)
+        }
+    }
+
+    private func endSelection() {
+        selectionMode = false
+        selectedPaths.removeAll()
     }
 
     private var filteredItems: [RemoteItem] {
@@ -259,6 +376,10 @@ private struct FileRow: View {
                     }
                     if let date = item.modifiedAt {
                         Text(date, style: .date)
+                    }
+                    if let mode = item.permissions {
+                        Text(String(format: "%04o", mode & 0o7777))
+                            .fontDesign(.monospaced)
                     }
                 }
                 .font(.caption)

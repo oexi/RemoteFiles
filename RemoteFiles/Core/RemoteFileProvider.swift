@@ -33,6 +33,7 @@ protocol RemoteFileProvider: Sendable {
     func createDirectory(path: String) async throws
     func remove(path: String, isDirectory: Bool) async throws
     func move(from: String, to: String, overwrite: Bool) async throws
+    func setPermissions(path: String, permissions: UInt32) async throws
 }
 
 protocol RemoteChunkReadableProvider: Sendable {
@@ -98,6 +99,10 @@ extension RemoteFileProvider {
 
     func move(from: String, to: String, overwrite: Bool) async throws {
         throw RemoteProviderError.unsupported("Moving items is not supported by this provider.")
+    }
+
+    func setPermissions(path: String, permissions: UInt32) async throws {
+        throw RemoteProviderError.unsupported("Changing Unix permissions is not supported by this provider.")
     }
 }
 

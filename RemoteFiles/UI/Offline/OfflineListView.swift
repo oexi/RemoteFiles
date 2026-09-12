@@ -7,9 +7,7 @@ struct OfflineListView: View {
         NavigationStack {
             List(offline.items) { item in
                 NavigationLink {
-                    QuickLookView(url: offline.localURL(for: item))
-                        .navigationTitle(item.fileName)
-                        .navigationBarTitleDisplayMode(.inline)
+                    OfflineDetailView(item: item)
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(item.fileName).lineLimit(1)
