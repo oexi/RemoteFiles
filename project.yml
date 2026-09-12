@@ -157,6 +157,7 @@ targets:
       - path: RemoteFiles/App/AppVersion.swift
       - path: RemoteFiles/Services/CredentialVault.swift
       - path: RemoteFiles/Services/SSHHostKeyStore.swift
+      - path: RemoteFiles/Services/WindowsSecurityDescriptorParser.swift
     dependencies:
       - package: SMBClient
       - package: NFSKit
