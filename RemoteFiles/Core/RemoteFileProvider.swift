@@ -37,6 +37,18 @@ protocol RemoteFileProvider: Sendable {
 
 protocol RemoteChunkReadableProvider: Sendable {
     func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data
+    func openReadSession(path: String, offset: UInt64) async throws -> (any RemoteChunkReadSession)?
+}
+
+protocol RemoteChunkReadSession: Sendable {
+    func read(length: Int) async throws -> Data
+    func close() async
+}
+
+extension RemoteChunkReadableProvider {
+    func openReadSession(path: String, offset: UInt64) async throws -> (any RemoteChunkReadSession)? {
+        nil
+    }
 }
 
 protocol RemoteChunkWritableProvider: Sendable {

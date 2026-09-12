@@ -203,20 +203,46 @@ final class TransferEngine: ObservableObject {
             let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
             $0.progress = 0.05 + 0.9 * min(1, fraction)
         }
-        while offset < totalBytes {
-            try Task.checkCancellation()
-            let remaining = totalBytes - offset
-            let length = Int(min(UInt64(chunkSize), remaining))
-            let data = try await reader.readChunk(path: item.path, offset: offset, length: length)
-            guard !data.isEmpty else {
-                throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
+
+        if let session = try await reader.openReadSession(path: item.path, offset: offset) {
+            do {
+                while offset < totalBytes {
+                    try Task.checkCancellation()
+                    let remaining = totalBytes - offset
+                    let length = Int(min(UInt64(chunkSize), remaining))
+                    let data = try await session.read(length: length)
+                    guard !data.isEmpty else {
+                        throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
+                    }
+                    try await writer.writeChunk(path: destinationPath, data: data, offset: offset)
+                    offset += UInt64(data.count)
+                    let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
+                    update(recordID) {
+                        $0.transferredBytes = offset
+                        $0.progress = 0.05 + 0.9 * min(1, fraction)
+                    }
+                }
+                await session.close()
+            } catch {
+                await session.close()
+                throw error
             }
-            try await writer.writeChunk(path: destinationPath, data: data, offset: offset)
-            offset += UInt64(data.count)
-            let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
-            update(recordID) {
-                $0.transferredBytes = offset
-                $0.progress = 0.05 + 0.9 * min(1, fraction)
+        } else {
+            while offset < totalBytes {
+                try Task.checkCancellation()
+                let remaining = totalBytes - offset
+                let length = Int(min(UInt64(chunkSize), remaining))
+                let data = try await reader.readChunk(path: item.path, offset: offset, length: length)
+                guard !data.isEmpty else {
+                    throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
+                }
+                try await writer.writeChunk(path: destinationPath, data: data, offset: offset)
+                offset += UInt64(data.count)
+                let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
+                update(recordID) {
+                    $0.transferredBytes = offset
+                    $0.progress = 0.05 + 0.9 * min(1, fraction)
+                }
             }
         }
         try await writer.finishChunkedUpload(path: destinationPath)

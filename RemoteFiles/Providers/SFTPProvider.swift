@@ -199,6 +199,17 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         }
     }
 
+    func openReadSession(path: String, offset: UInt64) async throws -> (any RemoteChunkReadSession)? {
+        let sftp = try await client()
+        let normalized = RemotePath.normalize(path)
+        do {
+            let file = try await sftp.openFile(filePath: normalized, flags: .read)
+            return SFTPReadSession(file: file, path: normalized, offset: offset)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "open \(normalized) for streaming read")
+        }
+    }
+
     func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64 {
         let normalized = RemotePath.normalize(path)
         let sftp = try await client()
@@ -297,6 +308,44 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             return RemoteProviderError.unsupported("The SFTP server does not support the operation required to \(operation).\(suffix)")
         default:
             return RemoteProviderError.invalidResponse("The SFTP server returned status \(status.errorCode.rawValue) while trying to \(operation).\(suffix)")
+        }
+    }
+
+    private final class SFTPReadSession: RemoteChunkReadSession, @unchecked Sendable {
+        private let file: SFTPFile
+        private let path: String
+        private var offset: UInt64
+        private var closed = false
+
+        init(file: SFTPFile, path: String, offset: UInt64) {
+            self.file = file
+            self.path = path
+            self.offset = offset
+        }
+
+        func read(length: Int) async throws -> Data {
+            guard !closed else { return Data() }
+            do {
+                let buffer = try await file.read(
+                    from: offset,
+                    length: UInt32(clamping: length)
+                )
+                let data = Data(buffer.readableBytesView)
+                offset += UInt64(data.count)
+                return data
+            } catch let status as SFTPMessage.Status where status.errorCode == .eof {
+                // Some embedded SFTP servers report EOF as an error instead of a normal
+                // empty READ response. Treat it as end-of-stream here.
+                return Data()
+            } catch {
+                throw SFTPProvider.normalizedSFTPError(error, operation: "stream \(path)")
+            }
+        }
+
+        func close() async {
+            guard !closed else { return }
+            closed = true
+            try? await file.close()
         }
     }
 }
