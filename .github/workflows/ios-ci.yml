@@ -108,7 +108,6 @@ jobs:
           set -euo pipefail
           xcrun simctl shutdown all || true
           xcrun simctl boot "${{ steps.simulator.outputs.udid }}" || true
-          xcrun simctl bootstatus "${{ steps.simulator.outputs.udid }}" -b
 
       - name: Run unit tests
         run: |
