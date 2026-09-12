@@ -224,12 +224,59 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         return 0
     }
 
+    func openWriteSession(
+        path: String,
+        overwrite: Bool,
+        resumeOffset: UInt64
+    ) async throws -> (session: any RemoteChunkWriteSession, offset: UInt64)? {
+        let normalized = RemotePath.normalize(path)
+        let sftp = try await client()
+
+        let safeResumeOffset: UInt64
+        let flags: SFTPOpenFileFlags
+        if resumeOffset > 0,
+           let existing = try? await attributes(path: normalized),
+           UInt64(max(0, existing.size ?? 0)) == resumeOffset {
+            safeResumeOffset = resumeOffset
+            flags = [.write]
+        } else {
+            safeResumeOffset = 0
+            flags = overwrite ? [.write, .create, .truncate] : [.write, .create, .forceCreate]
+        }
+
+        do {
+            let file = try await sftp.openFile(filePath: normalized, flags: flags)
+            return (
+                session: SFTPWriteSession(file: file, path: normalized),
+                offset: safeResumeOffset
+            )
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "open \(normalized) for streaming write")
+        }
+    }
+
     func writeChunk(path: String, data: Data, offset: UInt64) async throws {
         let sftp = try await client()
-        try await sftp.withFile(filePath: RemotePath.normalize(path), flags: .write) { file in
+        let normalized = RemotePath.normalize(path)
+        let file: SFTPFile
+        do {
+            file = try await sftp.openFile(filePath: normalized, flags: .write)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "open \(normalized) for chunk write")
+        }
+        do {
             var buffer = ByteBufferAllocator().buffer(capacity: data.count)
             buffer.writeBytes(data)
             try await file.write(buffer, at: offset)
+            do {
+                try await file.close()
+            } catch let status as SFTPMessage.Status where status.errorCode == .eof {
+                // Some SFTP servers report EOF while closing a successfully-written handle.
+                // The transfer engine verifies the final destination size afterwards.
+            }
+        } catch {
+            try? await file.close()
+            throw Self.normalizedSFTPError(error, operation: "write \(normalized)")
         }
     }
 
@@ -343,6 +390,49 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         }
 
         func close() async {
+            guard !closed else { return }
+            closed = true
+            try? await file.close()
+        }
+    }
+
+    private final class SFTPWriteSession: RemoteChunkWriteSession, @unchecked Sendable {
+        private let file: SFTPFile
+        private let path: String
+        private var closed = false
+
+        init(file: SFTPFile, path: String) {
+            self.file = file
+            self.path = path
+        }
+
+        func write(_ data: Data, at offset: UInt64) async throws {
+            guard !closed else {
+                throw RemoteProviderError.invalidResponse("The SFTP write session for \(path) is already closed.")
+            }
+            do {
+                var buffer = ByteBufferAllocator().buffer(capacity: data.count)
+                buffer.writeBytes(data)
+                try await file.write(buffer, at: offset)
+            } catch {
+                throw SFTPProvider.normalizedSFTPError(error, operation: "stream write \(path)")
+            }
+        }
+
+        func finish() async throws {
+            guard !closed else { return }
+            closed = true
+            do {
+                try await file.close()
+            } catch let status as SFTPMessage.Status where status.errorCode == .eof {
+                // Treat EOF-on-close as a successful close. TransferEngine immediately
+                // verifies the destination size, so an incomplete write is still detected.
+            } catch {
+                throw SFTPProvider.normalizedSFTPError(error, operation: "close \(path) after streaming write")
+            }
+        }
+
+        func abort() async {
             guard !closed else { return }
             closed = true
             try? await file.close()

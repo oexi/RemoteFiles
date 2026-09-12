@@ -56,10 +56,29 @@ protocol RemoteChunkWritableProvider: Sendable {
     func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64
     func writeChunk(path: String, data: Data, offset: UInt64) async throws
     func finishChunkedUpload(path: String) async throws
+    func openWriteSession(
+        path: String,
+        overwrite: Bool,
+        resumeOffset: UInt64
+    ) async throws -> (session: any RemoteChunkWriteSession, offset: UInt64)?
 }
 
 extension RemoteChunkWritableProvider {
     func finishChunkedUpload(path: String) async throws { }
+
+    func openWriteSession(
+        path: String,
+        overwrite: Bool,
+        resumeOffset: UInt64
+    ) async throws -> (session: any RemoteChunkWriteSession, offset: UInt64)? {
+        nil
+    }
+}
+
+protocol RemoteChunkWriteSession: Sendable {
+    func write(_ data: Data, at offset: UInt64) async throws
+    func finish() async throws
+    func abort() async
 }
 
 extension RemoteFileProvider {

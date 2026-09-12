@@ -193,50 +193,49 @@ final class TransferEngine: ObservableObject {
         requestedResumeOffset: UInt64
     ) async throws {
         let chunkSize = 1024 * 1024
-        var offset = try await writer.prepareChunkedUpload(
+        let requestedOffset = min(requestedResumeOffset, totalBytes)
+        let openedWriteSession = try await writer.openWriteSession(
             path: destinationPath,
             overwrite: overwrite,
-            resumeOffset: min(requestedResumeOffset, totalBytes)
+            resumeOffset: requestedOffset
         )
+        let writeSession = openedWriteSession?.session
+        var offset: UInt64
+        if let openedWriteSession {
+            offset = openedWriteSession.offset
+        } else {
+            offset = try await writer.prepareChunkedUpload(
+                path: destinationPath,
+                overwrite: overwrite,
+                resumeOffset: requestedOffset
+            )
+        }
         update(recordID) {
             $0.transferredBytes = offset
             let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
             $0.progress = 0.05 + 0.9 * min(1, fraction)
         }
 
-        if let session = try await reader.openReadSession(path: item.path, offset: offset) {
-            do {
-                while offset < totalBytes {
-                    try Task.checkCancellation()
-                    let remaining = totalBytes - offset
-                    let length = Int(min(UInt64(chunkSize), remaining))
-                    let data = try await session.read(length: length)
-                    guard !data.isEmpty else {
-                        throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
-                    }
-                    try await writer.writeChunk(path: destinationPath, data: data, offset: offset)
-                    offset += UInt64(data.count)
-                    let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
-                    update(recordID) {
-                        $0.transferredBytes = offset
-                        $0.progress = 0.05 + 0.9 * min(1, fraction)
-                    }
-                }
-                await session.close()
-            } catch {
-                await session.close()
-                throw error
-            }
-        } else {
+        let readSession = try await reader.openReadSession(path: item.path, offset: offset)
+        do {
             while offset < totalBytes {
                 try Task.checkCancellation()
                 let remaining = totalBytes - offset
                 let length = Int(min(UInt64(chunkSize), remaining))
-                let data = try await reader.readChunk(path: item.path, offset: offset, length: length)
+                let data: Data
+                if let readSession {
+                    data = try await readSession.read(length: length)
+                } else {
+                    data = try await reader.readChunk(path: item.path, offset: offset, length: length)
+                }
                 guard !data.isEmpty else {
                     throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
                 }
-                try await writer.writeChunk(path: destinationPath, data: data, offset: offset)
+                if let writeSession {
+                    try await writeSession.write(data, at: offset)
+                } else {
+                    try await writer.writeChunk(path: destinationPath, data: data, offset: offset)
+                }
                 offset += UInt64(data.count)
                 let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
                 update(recordID) {
@@ -244,8 +243,17 @@ final class TransferEngine: ObservableObject {
                     $0.progress = 0.05 + 0.9 * min(1, fraction)
                 }
             }
+            await readSession?.close()
+            if let writeSession {
+                try await writeSession.finish()
+            } else {
+                try await writer.finishChunkedUpload(path: destinationPath)
+            }
+        } catch {
+            await readSession?.close()
+            await writeSession?.abort()
+            throw error
         }
-        try await writer.finishChunkedUpload(path: destinationPath)
     }
 
     func clearFinished() {
