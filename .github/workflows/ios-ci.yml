@@ -108,7 +108,10 @@ jobs:
       - name: Verify File Provider extension metadata
         run: |
           set -euo pipefail
+          APP=".derivedData/Build/Products/Debug-iphonesimulator/RemoteFiles.app"
           EXT=".derivedData/Build/Products/Debug-iphonesimulator/RemoteFiles.app/PlugIns/RemoteFilesFileProvider.appex"
+          test -f "$APP/Assets.car"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIconName' "$APP/Info.plist" | grep -Fx 'AppIcon'
           test -d "$EXT"
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist" | grep -Fx 'com.apple.fileprovider-nonui'
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist" | grep -F 'FileProviderExtension'

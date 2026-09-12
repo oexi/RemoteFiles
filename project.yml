@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: 5.9
-    CURRENT_PROJECT_VERSION: 2
-    MARKETING_VERSION: 0.2.0
+    CURRENT_PROJECT_VERSION: 3
+    MARKETING_VERSION: 0.2.1
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     TARGETED_DEVICE_FAMILY: "1,2"
     SUPPORTS_MACCATALYST: NO
@@ -16,6 +16,7 @@ settings:
     INFOPLIST_KEY_CFBundleDisplayName: RemoteFiles
     INFOPLIST_KEY_CFBundleShortVersionString: "$(MARKETING_VERSION)"
     INFOPLIST_KEY_CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+    INFOPLIST_KEY_CFBundleIconName: AppIcon
     INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
     INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
     INFOPLIST_KEY_UIFileSharingEnabled: YES
@@ -65,7 +66,6 @@ targets:
       - path: RemoteFiles
         excludes:
           - Resources
-    resources:
       - path: RemoteFiles/Resources
     settings:
       base:

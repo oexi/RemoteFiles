@@ -21,6 +21,13 @@ import TreeSitterTypeScriptRunestone
 import TreeSitterYAMLRunestone
 
 enum EditorLanguage {
+    static let editableFileNames: Set<String> = [
+        ".bash_profile", ".bashrc", ".curlrc", ".editorconfig", ".env",
+        ".gitattributes", ".gitconfig", ".gitignore", ".npmrc", ".profile",
+        ".vimrc", ".wgetrc", ".yarnrc", ".zlogin", ".zlogout", ".zprofile", ".zshrc",
+        "Brewfile", "Dockerfile", "Gemfile", "Makefile", "Podfile", "Rakefile"
+    ]
+
     static let editableExtensions: Set<String> = [
         "txt", "log", "conf", "cfg", "ini", "md",
         "swift", "c", "h", "cpp", "cc", "cxx", "hpp",
@@ -30,10 +37,19 @@ enum EditorLanguage {
     ]
 
     static func isEditable(fileName: String) -> Bool {
-        editableExtensions.contains((fileName as NSString).pathExtension.lowercased())
+        if editableFileNames.contains(fileName) { return true }
+        if fileName.hasPrefix("."), fileName != ".DS_Store" {
+            return true
+        }
+        return editableExtensions.contains((fileName as NSString).pathExtension.lowercased())
     }
 
     static func language(fileName: String) -> TreeSitterLanguage? {
+        if [
+            ".bash_profile", ".bashrc", ".profile", ".zlogin", ".zlogout", ".zprofile", ".zshrc"
+        ].contains(fileName) {
+            return .bash
+        }
         switch (fileName as NSString).pathExtension.lowercased() {
         case "swift": .swift
         case "c", "h": .c

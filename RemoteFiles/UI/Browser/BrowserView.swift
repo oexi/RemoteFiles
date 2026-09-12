@@ -2,11 +2,22 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct BrowserView: View {
+    private enum ImportSelection {
+        case files
+        case folder
+
+        var allowedContentTypes: [UTType] {
+            switch self {
+            case .files: return [.item]
+            case .folder: return [.folder]
+            }
+        }
+    }
+
     @StateObject private var model: BrowserViewModel
     @State private var showingFolderPrompt = false
     @State private var newFolderName = ""
-    @State private var showingImporter = false
-    @State private var showingFolderImporter = false
+    @State private var importSelection: ImportSelection?
     @State private var searchText = ""
     @State private var renameItem: RemoteItem?
     @State private var renameText = ""
@@ -59,11 +70,37 @@ struct BrowserView: View {
         }
         .navigationTitle(model.profile.name)
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .top) {
-            HStack(spacing: 8) {
-                Image(systemName: "folder")
-                Text(model.currentPath).font(.caption).lineLimit(1).truncationMode(.middle)
-                Spacer()
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                    Text(model.currentPath)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                }
+
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search this folder", text: $searchText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear Search")
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .padding(.horizontal)
             .padding(.vertical, 7)
@@ -80,14 +117,13 @@ struct BrowserView: View {
                         Button("New Folder", systemImage: "folder.badge.plus") { showingFolderPrompt = true }
                     }
                     if model.capabilities.contains(.write) {
-                        Button("Upload Files", systemImage: "square.and.arrow.up") { showingImporter = true }
-                        Button("Upload Folder", systemImage: "folder.badge.plus") { showingFolderImporter = true }
+                        Button("Upload Files", systemImage: "square.and.arrow.up") { importSelection = .files }
+                        Button("Upload Folder", systemImage: "folder.badge.plus") { importSelection = .folder }
                     }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
         }
         .refreshable { await model.refresh() }
-        .searchable(text: $searchText, prompt: "Search this folder")
         .onChange(of: searchText) { _, _ in displayLimit = 200 }
         .onChange(of: model.currentPath) { _, _ in displayLimit = 200 }
         .task { await model.start() }
@@ -103,13 +139,15 @@ struct BrowserView: View {
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "Unknown error") }
-        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            switch result {
-            case .success(let urls): Task { await model.upload(localURLs: urls) }
-            case .failure(let error): model.errorMessage = error.localizedDescription
-            }
-        }
-        .fileImporter(isPresented: $showingFolderImporter, allowedContentTypes: [.folder], allowsMultipleSelection: true) { result in
+        .fileImporter(
+            isPresented: Binding(
+                get: { importSelection != nil },
+                set: { if !$0 { importSelection = nil } }
+            ),
+            allowedContentTypes: importSelection?.allowedContentTypes ?? [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            importSelection = nil
             switch result {
             case .success(let urls): Task { await model.upload(localURLs: urls) }
             case .failure(let error): model.errorMessage = error.localizedDescription
