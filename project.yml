@@ -161,6 +161,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.oexi.RemoteFiles.FileProvider
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: RemoteFilesFileProvider/Info.plist
+        APPLICATION_EXTENSION_API_ONLY: YES
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: RemoteFilesFileProvider/RemoteFilesFileProvider.entitlements
         SKIP_INSTALL: YES

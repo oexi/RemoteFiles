@@ -88,12 +88,18 @@ jobs:
           EXT_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$EXT/Info.plist")"
           APP_BUNDLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")"
           EXT_BUNDLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")"
+          EXT_POINT="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist")"
+          EXT_CLASS="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist")"
           test "$APP_VERSION" = "${{ steps.version.outputs.version }}"
           test "$EXT_VERSION" = "$APP_VERSION"
           test "$APP_BUILD" = "${{ steps.version.outputs.build }}"
           test "$EXT_BUILD" = "$APP_BUILD"
           test "$APP_BUNDLE" = "com.oexi.RemoteFiles"
           test "$EXT_BUNDLE" = "com.oexi.RemoteFiles.FileProvider"
+          test "$EXT_POINT" = "com.apple.fileprovider-nonui"
+          [[ "$EXT_CLASS" == *FileProviderExtension ]]
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionFileProviderSupportsEnumeration' "$EXT/Info.plist" | grep -Fx 'true'
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionFileProviderDocumentGroup' "$EXT/Info.plist" | grep -Fx 'group.com.oexi.RemoteFiles'
           mkdir -p dist/Payload
           cp -R "$APP" dist/Payload/
           IPA="RemoteFiles-${{ steps.version.outputs.version }}-build${{ steps.version.outputs.build }}-unsigned.ipa"
