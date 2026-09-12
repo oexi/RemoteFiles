@@ -5,6 +5,7 @@ struct BrowserView: View {
     @EnvironmentObject private var connections: ConnectionStore
     @EnvironmentObject private var transfers: TransferEngine
     @EnvironmentObject private var offline: OfflineStore
+    @EnvironmentObject private var clipboard: FileOperationClipboard
 
     private enum ImportSelection {
         case files
@@ -64,6 +65,15 @@ struct BrowserView: View {
                     }
                     Menu {
                         Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                        if !clipboard.isEmpty, model.capabilities.contains(.write) {
+                            Button(
+                                "Paste \(clipboard.items.count == 1 ? clipboard.items[0].name : "\(clipboard.items.count) Items")",
+                                systemImage: "doc.on.clipboard"
+                            ) {
+                                searchFocused = false
+                                Task { await model.paste(clipboard, using: connections) }
+                            }
+                        }
                         if model.capabilities.contains(.createDirectory) {
                             Button("New Folder", systemImage: "folder.badge.plus") { showingFolderPrompt = true }
                         }
@@ -338,7 +348,6 @@ struct BrowserView: View {
         }
         .refreshable { await model.refresh() }
         .scrollDismissesKeyboard(.interactively)
-        .simultaneousGesture(TapGesture().onEnded { searchFocused = false })
     }
 
     private var selectionBar: some View {
@@ -353,6 +362,23 @@ struct BrowserView: View {
                 }
             }
             Spacer()
+            Button {
+                placeSelectedOnClipboard(.copy)
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .disabled(selectedPaths.isEmpty)
+            .accessibilityLabel("Copy Selected")
+            Button {
+                placeSelectedOnClipboard(.move)
+            } label: {
+                Image(systemName: "arrow.right.doc.on.clipboard")
+            }
+            .disabled(
+                selectedPaths.isEmpty ||
+                (!model.capabilities.contains(.move) && !model.capabilities.contains(.delete))
+            )
+            .accessibilityLabel("Move Selected")
             Button(role: .destructive) {
                 showingBatchDeleteConfirmation = true
             } label: {
@@ -378,8 +404,27 @@ struct BrowserView: View {
         selectedPaths.removeAll()
     }
 
+    private func placeSelectedOnClipboard(_ operation: FileOperationClipboard.Operation) {
+        let items = model.items.filter { selectedPaths.contains($0.path) }
+        guard !items.isEmpty else { return }
+        clipboard.set(items, from: model.profile.id, operation: operation)
+        endSelection()
+    }
+
     @ViewBuilder
     private func itemContextMenu(_ item: RemoteItem) -> some View {
+        Button("Copy", systemImage: "doc.on.doc") {
+            clipboard.set([item], from: model.profile.id, operation: .copy)
+            searchFocused = false
+        }
+
+        if model.capabilities.contains(.move) || model.capabilities.contains(.delete) {
+            Button("Move", systemImage: "arrow.right.doc.on.clipboard") {
+                clipboard.set([item], from: model.profile.id, operation: .move)
+                searchFocused = false
+            }
+        }
+
         Button("Select", systemImage: "checkmark.circle") {
             selectionMode = true
             selectedPaths = [item.path]

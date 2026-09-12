@@ -19,6 +19,8 @@ struct OfflineDetailView: View {
         Group {
             if ArchiveManager.canOpen(fileName: item.fileName) {
                 OfflineArchiveContentView(item: item, message: $message, working: $working)
+            } else if EditorLanguage.isEditable(fileName: item.fileName) {
+                OfflineEditorView(item: item)
             } else {
                 QuickLookView(url: url)
             }

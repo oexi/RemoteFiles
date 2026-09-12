@@ -68,6 +68,15 @@ final class OfflineStore: ObservableObject {
         root.appendingPathComponent(item.storedFileName)
     }
 
+    func fileDidChange(_ item: OfflineItem) {
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        let size = (try? localURL(for: item).resourceValues(forKeys: [.fileSizeKey]).fileSize)
+            .map { Int64($0) }
+        items[index].size = size
+        try? FileManager.default.removeItem(at: exportRoot.appendingPathComponent(item.id.uuidString, isDirectory: true))
+        persist()
+    }
+
     func externalURL(for item: OfflineItem) async throws -> URL {
         let source = localURL(for: item)
         let directory = exportRoot.appendingPathComponent(item.id.uuidString, isDirectory: true)

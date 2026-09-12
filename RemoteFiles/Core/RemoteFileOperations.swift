@@ -1,6 +1,60 @@
 import Foundation
 
 enum RemoteFileOperations {
+    static func copyRecursively(
+        _ item: RemoteItem,
+        from source: any RemoteFileProvider,
+        to destination: any RemoteFileProvider,
+        destinationPath: String
+    ) async throws {
+        try Task.checkCancellation()
+        if item.isDirectory {
+            try await destination.createDirectory(path: destinationPath)
+            let children = try await source.list(path: item.path)
+            for child in children {
+                try Task.checkCancellation()
+                try await copyRecursively(
+                    child,
+                    from: source,
+                    to: destination,
+                    destinationPath: RemotePath.join(destinationPath, child.name)
+                )
+            }
+            return
+        }
+
+        let tempURL = try await CacheManager.shared.temporaryURL(fileName: item.name)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try await source.download(path: item.path, to: tempURL)
+        try Task.checkCancellation()
+        try await destination.upload(from: tempURL, to: destinationPath, overwrite: false)
+    }
+
+    static func availablePastePath(
+        for item: RemoteItem,
+        in parent: String,
+        provider: any RemoteFileProvider
+    ) async -> String {
+        let direct = RemotePath.join(parent, item.name)
+        if (try? await provider.attributes(path: direct)) == nil { return direct }
+
+        let split = splitName(item.name, isDirectory: item.isDirectory)
+        var index = 1
+        while true {
+            let suffix = index == 1 ? " copy" : " copy \(index)"
+            let candidateName = split.base + suffix + split.extensionPart
+            let candidate = RemotePath.join(parent, candidateName)
+            if (try? await provider.attributes(path: candidate)) == nil { return candidate }
+            index += 1
+        }
+    }
+
+    static func wouldPlaceDirectoryInsideItself(sourcePath: String, destinationParent: String) -> Bool {
+        let source = RemotePath.normalize(sourcePath)
+        let parent = RemotePath.normalize(destinationParent)
+        return parent == source || parent.hasPrefix(source + "/")
+    }
+
     static func removeRecursively(
         _ item: RemoteItem,
         provider: any RemoteFileProvider
@@ -24,5 +78,14 @@ enum RemoteFileOperations {
     ) async throws {
         let item = try await provider.attributes(path: path)
         try await removeRecursively(item, provider: provider)
+    }
+
+    private static func splitName(_ name: String, isDirectory: Bool) -> (base: String, extensionPart: String) {
+        guard !isDirectory,
+              let dot = name.lastIndex(of: "."),
+              dot != name.startIndex else {
+            return (name, "")
+        }
+        return (String(name[..<dot]), String(name[dot...]))
     }
 }

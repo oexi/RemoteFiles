@@ -7,6 +7,6 @@ struct OfflineItem: Identifiable, Codable, Hashable, Sendable {
     let remotePath: String
     let fileName: String
     let storedFileName: String
-    let size: Int64?
+    var size: Int64?
     let pinnedAt: Date
 }

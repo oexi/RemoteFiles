@@ -9,6 +9,7 @@ struct RemoteEditorView: View {
     @State private var baseRevision: RemoteRevision?
     @State private var loading = true
     @State private var saving = false
+    @State private var loadError: String?
     @State private var errorMessage: String?
     @State private var showConflict = false
 
@@ -16,6 +17,12 @@ struct RemoteEditorView: View {
         Group {
             if loading {
                 ProgressView("Loading \(item.name)…")
+            } else if let loadError {
+                ContentUnavailableView(
+                    "Text preview unavailable",
+                    systemImage: "doc.questionmark",
+                    description: Text(loadError)
+                )
             } else {
                 RunestoneEditor(text: $text, fileName: item.name)
             }
@@ -25,7 +32,7 @@ struct RemoteEditorView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Save") { Task { await save(force: false) } }
-                    .disabled(loading || saving)
+                    .disabled(loading || saving || loadError != nil)
             }
         }
         .task { await load() }
@@ -49,15 +56,15 @@ struct RemoteEditorView: View {
             guard data.count <= 20 * 1024 * 1024 else {
                 throw RemoteProviderError.unsupported("Text files larger than 20 MB are not opened in the editor.")
             }
-            guard let decoded = Self.decode(data) else {
-                throw RemoteProviderError.invalidResponse("The text encoding is not supported yet.")
+            guard let decoded = TextFileDetector.decode(data) else {
+                throw RemoteProviderError.unsupported("This appears to be a binary file, so it is not opened as text.")
             }
             localURL = url
             text = decoded
             baseRevision = item.revision
             loading = false
         } catch {
-            errorMessage = error.localizedDescription
+            loadError = error.localizedDescription
             loading = false
         }
     }
@@ -91,11 +98,5 @@ struct RemoteEditorView: View {
         return false
     }
 
-    private static func decode(_ data: Data) -> String? {
-        String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .utf16)
-            ?? String(data: data, encoding: .utf16LittleEndian)
-            ?? String(data: data, encoding: .utf16BigEndian)
-    }
 }
 

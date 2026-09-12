@@ -101,6 +101,82 @@ final class BrowserViewModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    func paste(_ clipboard: FileOperationClipboard, using connections: ConnectionStore) async {
+        guard let destination = provider,
+              let operation = clipboard.operation,
+              let sourceProfileID = clipboard.sourceProfileID,
+              !clipboard.items.isEmpty else { return }
+
+        guard let sourceProfile = connections.profiles.first(where: { $0.id == sourceProfileID }) else {
+            errorMessage = "The source connection no longer exists."
+            return
+        }
+
+        loading = true
+        defer { loading = false }
+
+        let sameProfile = sourceProfileID == profile.id
+        var createdSource: (any RemoteFileProvider)?
+        do {
+            let source: any RemoteFileProvider
+            if sameProfile {
+                source = destination
+            } else {
+                let newSource = try ProviderFactory.make(for: sourceProfile)
+                try await newSource.connect()
+                createdSource = newSource
+                source = newSource
+            }
+
+            for item in clipboard.items {
+                try Task.checkCancellation()
+
+                if sameProfile,
+                   item.isDirectory,
+                   RemoteFileOperations.wouldPlaceDirectoryInsideItself(
+                       sourcePath: item.path,
+                       destinationParent: currentPath
+                   ) {
+                    throw RemoteProviderError.invalidConfiguration("A folder cannot be pasted inside itself.")
+                }
+
+                if operation == .move,
+                   sameProfile,
+                   RemotePath.parent(item.path) == RemotePath.normalize(currentPath) {
+                    continue
+                }
+
+                let target = await RemoteFileOperations.availablePastePath(
+                    for: item,
+                    in: currentPath,
+                    provider: destination
+                )
+
+                if operation == .move, sameProfile {
+                    try await destination.move(from: item.path, to: target, overwrite: false)
+                } else {
+                    try await RemoteFileOperations.copyRecursively(
+                        item,
+                        from: source,
+                        to: destination,
+                        destinationPath: target
+                    )
+                    if operation == .move {
+                        try await RemoteFileOperations.removeRecursively(item, provider: source)
+                    }
+                }
+            }
+
+            if let createdSource { await createdSource.disconnect() }
+            if operation == .move { clipboard.clear() }
+            await refresh()
+        } catch {
+            if let createdSource { await createdSource.disconnect() }
+            errorMessage = error.localizedDescription
+            await refresh()
+        }
+    }
+
     func upload(localURLs: [URL]) async {
         guard let provider else { return }
         uploading = true

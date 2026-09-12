@@ -37,11 +37,14 @@ enum EditorLanguage {
     ]
 
     static func isEditable(fileName: String) -> Bool {
+        if fileName == ".DS_Store" { return false }
         if editableFileNames.contains(fileName) { return true }
-        if fileName.hasPrefix("."), fileName != ".DS_Store" {
+        if fileName.hasPrefix(".") {
             return true
         }
-        return editableExtensions.contains((fileName as NSString).pathExtension.lowercased())
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        if ext.isEmpty { return true }
+        return editableExtensions.contains(ext)
     }
 
     static func language(fileName: String) -> TreeSitterLanguage? {
