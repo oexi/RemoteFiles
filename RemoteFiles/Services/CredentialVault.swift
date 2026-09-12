@@ -25,7 +25,7 @@ struct Credential: Sendable {
 
 final class CredentialVault: @unchecked Sendable {
     static let shared = CredentialVault()
-    private let service = "com.example.RemoteFiles.credentials"
+    private let service = "com.oexi.RemoteFiles.credentials"
 
     func save(_ credential: Credential, for profileID: UUID) throws {
         let account = profileID.uuidString

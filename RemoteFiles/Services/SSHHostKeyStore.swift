@@ -46,7 +46,7 @@ final class TOFUHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, @unc
 }
 
 struct SSHHostKeyStore: Sendable {
-    private let service = "com.example.RemoteFiles.ssh-hostkeys"
+    private let service = "com.oexi.RemoteFiles.ssh-hostkeys"
 
     func load(host: String, port: Int) throws -> String? {
         var result: CFTypeRef?

@@ -79,13 +79,27 @@ jobs:
           set -euo pipefail
           APP=".derivedData-release/Build/Products/Release-iphoneos/RemoteFiles.app"
           test -d "$APP"
+          test -d "$APP/PlugIns/RemoteFilesFileProvider.appex"
           mkdir -p dist/Payload
           cp -R "$APP" dist/Payload/
           IPA="RemoteFiles-${{ steps.version.outputs.version }}-build${{ steps.version.outputs.build }}-unsigned.ipa"
-          (cd dist && /usr/bin/zip -qry "$IPA" Payload)
+          (cd dist && /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload "$IPA")
           shasum -a 256 "dist/$IPA" | tee "dist/$IPA.sha256"
           echo "ipa=dist/$IPA" >> "$GITHUB_OUTPUT"
           echo "sha=dist/$IPA.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare release notes
+        if: github.ref_type == 'tag'
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## RemoteFiles ${{ github.ref_name }}
+
+          This release contains the iPhone/iPad application and its File Provider extension.
+
+          The attached `*-unsigned.ipa` is intentionally unsigned because this repository does not contain Apple signing credentials. It can be downloaded and re-signed by a sideloading/signing tool. A directly installable signed IPA requires matching Apple Developer certificates and provisioning profiles for both the app and the File Provider extension.
+
+          A SHA-256 checksum is attached next to the IPA.
+          EOF
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
@@ -101,8 +115,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            "${{ steps.package.outputs.ipa }}" \
-            "${{ steps.package.outputs.sha }}" \
-            --title "RemoteFiles $GITHUB_REF_NAME" \
-            --generate-notes
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              "${{ steps.package.outputs.ipa }}" \
+              "${{ steps.package.outputs.sha }}" \
+              --clobber
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "RemoteFiles $GITHUB_REF_NAME" \
+              --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "${{ steps.package.outputs.ipa }}" \
+              "${{ steps.package.outputs.sha }}" \
+              --title "RemoteFiles $GITHUB_REF_NAME" \
+              --notes-file release-notes.md
+          fi

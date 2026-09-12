@@ -1,6 +1,6 @@
 name: RemoteFiles
 options:
-  bundleIdPrefix: com.example
+  bundleIdPrefix: com.oexi
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -17,7 +17,7 @@ settings:
     INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
     INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
     INFOPLIST_KEY_UIFileSharingEnabled: YES
-    PRODUCT_BUNDLE_IDENTIFIER: com.example.RemoteFiles
+    PRODUCT_BUNDLE_IDENTIFIER: com.oexi.RemoteFiles
 packages:
   Runestone:
     url: https://github.com/simonbs/Runestone.git
@@ -158,7 +158,7 @@ targets:
         product: NIOCore
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.RemoteFiles.FileProvider
+        PRODUCT_BUNDLE_IDENTIFIER: com.oexi.RemoteFiles.FileProvider
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: RemoteFilesFileProvider/RemoteFilesFileProvider.entitlements
         SKIP_INSTALL: YES

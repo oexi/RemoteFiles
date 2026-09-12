@@ -9,10 +9,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
-        guard let profile = ConnectionProfile(
-            fileProviderDomainIdentifier: domain.identifier.rawValue,
-            userInfo: domain.userInfo
-        ) else {
+        guard let profileID = UUID(uuidString: domain.identifier.rawValue),
+              let profile = FileProviderProfileStore.load(profileID: profileID) else {
             fatalError("Invalid RemoteFiles File Provider domain")
         }
         self.profile = profile
@@ -38,9 +36,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     completionHandler(FileProviderItem(rootName: profile.name), nil)
                 } else {
                     let provider = try await connectedProvider()
+                    defer { Task { await provider.disconnect() } }
                     let path = try codec.path(for: identifier)
                     let remote = try await provider.attributes(path: path)
-                    await provider.disconnect()
                     completionHandler(FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities), nil)
                 }
                 progress.completedUnitCount = 100
@@ -61,12 +59,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         Task {
             do {
                 let provider = try await connectedProvider()
+                defer { Task { await provider.disconnect() } }
                 let path = try codec.path(for: itemIdentifier)
                 let remote = try await provider.attributes(path: path)
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("RemoteFiles-FP-\(UUID().uuidString)-\(remote.name)")
                 try await provider.download(path: path, to: url)
-                await provider.disconnect()
                 progress.completedUnitCount = 100
                 completionHandler(url, FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities), nil)
             } catch {
@@ -88,9 +86,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         Task {
             do {
                 let provider = try await connectedProvider()
+                defer { Task { await provider.disconnect() } }
                 let parentPath = try codec.path(for: itemTemplate.parentItemIdentifier)
                 let path = RemotePath.join(parentPath, itemTemplate.filename)
-                if itemTemplate.contentType.conforms(to: .folder) {
+                if itemTemplate.contentType?.conforms(to: .folder) == true {
                     try await provider.createDirectory(path: path)
                 } else if let url {
                     try await provider.upload(from: url, to: path, overwrite: options.contains(.mayAlreadyExist))
@@ -101,7 +100,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     try await provider.upload(from: empty, to: path, overwrite: options.contains(.mayAlreadyExist))
                 }
                 let remote = try await provider.attributes(path: path)
-                await provider.disconnect()
                 progress.completedUnitCount = 100
                 completionHandler(FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities), [], false, nil)
             } catch {
@@ -124,6 +122,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         Task {
             do {
                 let provider = try await connectedProvider()
+                defer { Task { await provider.disconnect() } }
                 var path = try codec.path(for: item.itemIdentifier)
                 let desiredParent = try codec.path(for: item.parentItemIdentifier)
                 let desiredPath = RemotePath.join(desiredParent, item.filename)
@@ -135,7 +134,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     try await provider.upload(from: newContents, to: path, overwrite: true)
                 }
                 let remote = try await provider.attributes(path: path)
-                await provider.disconnect()
                 progress.completedUnitCount = 100
                 completionHandler(FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities), [], false, nil)
             } catch {
@@ -156,10 +154,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         Task {
             do {
                 let provider = try await connectedProvider()
+                defer { Task { await provider.disconnect() } }
                 let path = try codec.path(for: identifier)
                 let remote = try await provider.attributes(path: path)
                 try await provider.remove(path: path, isDirectory: remote.isDirectory)
-                await provider.disconnect()
                 progress.completedUnitCount = 100
                 completionHandler(nil)
             } catch {

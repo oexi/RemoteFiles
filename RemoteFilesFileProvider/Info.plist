@@ -7,7 +7,7 @@
 <key>NSExtension</key><dict>
   <key>NSExtensionPointIdentifier</key><string>com.apple.fileprovider-nonui</string>
   <key>NSExtensionPrincipalClass</key><string>$(PRODUCT_MODULE_NAME).FileProviderExtension</string>
-  <key>NSExtensionFileProviderDocumentGroup</key><string>group.com.example.RemoteFiles</string>
+  <key>NSExtensionFileProviderDocumentGroup</key><string>group.com.oexi.RemoteFiles</string>
   <key>NSExtensionFileProviderSupportsEnumeration</key><true/>
 </dict>
 </dict></plist>
