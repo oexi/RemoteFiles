@@ -1,0 +1,68 @@
+import Foundation
+import Security
+
+struct Credential: Sendable {
+    let username: String
+    let password: String
+}
+
+final class CredentialVault: @unchecked Sendable {
+    static let shared = CredentialVault()
+    private let service = "com.example.RemoteFiles.credentials"
+
+    func save(_ credential: Credential, for profileID: UUID) throws {
+        let account = profileID.uuidString
+        let payload = try JSONEncoder().encode(Payload(username: credential.username, password: credential.password))
+        let base: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(base as CFDictionary)
+        var query = base
+        query[kSecValueData as String] = payload
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw VaultError.status(status) }
+    }
+
+    func load(for profileID: UUID) throws -> Credential? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: profileID.uuidString,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = result as? Data else { throw VaultError.status(status) }
+        let payload = try JSONDecoder().decode(Payload.self, from: data)
+        return Credential(username: payload.username, password: payload.password)
+    }
+
+    func remove(for profileID: UUID) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: profileID.uuidString
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
+    private struct Payload: Codable {
+        let username: String
+        let password: String
+    }
+
+    enum VaultError: LocalizedError {
+        case status(OSStatus)
+        var errorDescription: String? {
+            switch self {
+            case .status(let status): "Keychain error: \(status)"
+            }
+        }
+    }
+}
+

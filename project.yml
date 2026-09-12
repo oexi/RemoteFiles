@@ -1,0 +1,121 @@
+name: RemoteFiles
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: 5.9
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.0
+    IPHONEOS_DEPLOYMENT_TARGET: 17.0
+    TARGETED_DEVICE_FAMILY: "1,2"
+    SUPPORTS_MACCATALYST: NO
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_CFBundleDisplayName: RemoteFiles
+    INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+    INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace: YES
+    INFOPLIST_KEY_UIFileSharingEnabled: YES
+    PRODUCT_BUNDLE_IDENTIFIER: com.example.RemoteFiles
+packages:
+  Runestone:
+    url: https://github.com/simonbs/Runestone.git
+    revision: 592434a103a4d1ab83e14f87ac6eef569dd7a99d
+  SMBClient:
+    url: https://github.com/kishikawakatsumi/SMBClient.git
+    revision: 66eafaa6d17e034e8036dee4b3ebc1b52cb53919
+  NFSKit:
+    url: https://github.com/alexiscn/NFSKit.git
+    revision: ec63d055b9ee08d609d3c6cb32f42c07edc7bdf7
+  FilesProvider:
+    url: https://github.com/amosavian/FileProvider.git
+    revision: 5d31778376af168ac917e0b1e8d2c4ee64cb246c
+  Citadel:
+    url: https://github.com/orlandos-nl/Citadel.git
+    revision: ae8562f895de06ccb86fdb1cbb65fd99c8976e12
+  NIOSSH:
+    url: https://github.com/Wellz26/swift-nio-ssh.git
+    revision: b93961a2988607a756cbc21a811f406f27aa9ab6
+  SwiftNIO:
+    url: https://github.com/apple/swift-nio.git
+    revision: c51907a839e63ebf0ba2076bba73dd96436bd1b9
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    revision: d17566fdcb293c2d2304c6b445dd729dd66d470e
+  TreeSitterLanguages:
+    url: https://github.com/simonbs/TreeSitterLanguages.git
+    revision: 15cf3a9ec3ab95e0d058b7df9f35619123c9e02d
+targets:
+  RemoteFiles:
+    type: application
+    platform: iOS
+    sources:
+      - path: RemoteFiles
+        excludes:
+          - Resources
+    resources:
+      - path: RemoteFiles/Resources
+    dependencies:
+      - package: Runestone
+      - package: SMBClient
+      - package: NFSKit
+      - package: FilesProvider
+      - package: Citadel
+      - package: NIOSSH
+        product: NIOSSH
+      - package: SwiftNIO
+        product: NIOCore
+      - package: ZIPFoundation
+      - package: TreeSitterLanguages
+        product: TreeSitterBashRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterCRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterCPPRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterCSSRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterGoRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterHTMLRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterJavaRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterJavaScriptRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterJSONRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterMarkdownRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterPHPRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterPythonRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterRustRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterSQLRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterSwiftRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterTOMLRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterTypeScriptRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterTSXRunestone
+      - package: TreeSitterLanguages
+        product: TreeSitterYAMLRunestone
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: YES
+  RemoteFilesTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: RemoteFilesTests
+    dependencies:
+      - target: RemoteFiles
+
