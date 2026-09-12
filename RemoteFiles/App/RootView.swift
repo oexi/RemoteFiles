@@ -12,6 +12,8 @@ struct RootView: View {
                 .tabItem { Label("Transfers", systemImage: "arrow.up.arrow.down") }
             OfflineListView()
                 .tabItem { Label("Offline", systemImage: "arrow.down.circle") }
+            SettingsView()
+                .tabItem { Label("Settings", systemImage: "gearshape") }
         }
         .task {
             transfers.resumePending(using: connections)

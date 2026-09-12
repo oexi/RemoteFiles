@@ -16,6 +16,7 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
     let destination: String
     var state: TransferState
     var progress: Double
+    var transferredBytes: UInt64?
     var errorMessage: String?
 
     init(
@@ -39,6 +40,7 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         self.destination = destination
         state = .queued
         progress = 0
+        transferredBytes = 0
     }
 }
 

@@ -13,6 +13,7 @@ final class ConnectionStore: ObservableObject {
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         fileURL = directory.appendingPathComponent("connections.json")
         load()
+        FileProviderDomainManager.registerAll(profiles)
     }
 
     func upsert(_ profile: ConnectionProfile) {
@@ -23,12 +24,14 @@ final class ConnectionStore: ObservableObject {
         }
         profiles.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         persist()
+        FileProviderDomainManager.register(profile)
     }
 
     func remove(_ profile: ConnectionProfile) {
         profiles.removeAll { $0.id == profile.id }
         CredentialVault.shared.remove(for: profile.id)
         persist()
+        FileProviderDomainManager.remove(profile)
     }
 
     private func load() {

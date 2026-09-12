@@ -123,10 +123,18 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         }
     }
 
-    func prepareChunkedUpload(path: String, overwrite: Bool) async throws {
+    func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64 {
+        let normalized = RemotePath.normalize(path)
         let sftp = try await client()
+
+        if resumeOffset > 0, let existing = try? await attributes(path: normalized),
+           UInt64(max(0, existing.size ?? 0)) == resumeOffset {
+            return resumeOffset
+        }
+
         let flags: SFTPOpenFileFlags = overwrite ? [.write, .create, .truncate] : [.write, .create, .forceCreate]
-        try await sftp.withFile(filePath: RemotePath.normalize(path), flags: flags) { _ in }
+        try await sftp.withFile(filePath: normalized, flags: flags) { _ in }
+        return 0
     }
 
     func writeChunk(path: String, data: Data, offset: UInt64) async throws {

@@ -1,8 +1,8 @@
 import Foundation
 
-final class WebDAVProvider: RemoteFileProvider, @unchecked Sendable {
+final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
-    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .copy, .fileRevisions])
+    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .copy, .randomRead, .fileRevisions])
 
     private let credential: Credential?
     private let session: URLSession
@@ -66,6 +66,19 @@ final class WebDAVProvider: RemoteFileProvider, @unchecked Sendable {
         try FileManager.default.moveItem(at: temporaryURL, to: localURL)
     }
 
+    func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
+        guard length > 0 else { return Data() }
+        var request = try makeRequest(path: path, method: "GET")
+        request.setValue("bytes=\(offset)-\(offset + UInt64(length) - 1)", forHTTPHeaderField: "Range")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw RemoteProviderError.invalidResponse("Non-HTTP response.")
+        }
+        if http.statusCode == 206 { return data }
+        if http.statusCode == 200, offset == 0 { return Data(data.prefix(length)) }
+        throw RemoteProviderError.unsupported("This WebDAV server does not support byte-range reads.")
+    }
+
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
         var request = try makeRequest(path: path, method: "PUT")
         if !overwrite { request.setValue("*", forHTTPHeaderField: "If-None-Match") }
@@ -96,7 +109,7 @@ final class WebDAVProvider: RemoteFileProvider, @unchecked Sendable {
     private func makeRequest(path: String, method: String) throws -> URLRequest {
         var request = URLRequest(url: try url(for: path))
         request.httpMethod = method
-        request.setValue("RemoteFiles/0.1", forHTTPHeaderField: "User-Agent")
+        request.setValue(AppVersion.userAgent, forHTTPHeaderField: "User-Agent")
         if let credential {
             let token = Data("\(credential.username):\(credential.password)".utf8).base64EncodedString()
             request.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")

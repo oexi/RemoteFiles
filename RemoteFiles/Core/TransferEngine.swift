@@ -47,7 +47,6 @@ final class TransferEngine: ObservableObject {
         guard record.state == .failed || record.state == .cancelled else { return }
         update(record.id) {
             $0.state = .queued
-            $0.progress = 0
             $0.errorMessage = nil
         }
         startPersisted(recordWithID: record.id, using: connections)
@@ -150,9 +149,11 @@ final class TransferEngine: ObservableObject {
                     writer: writer,
                     destinationPath: destinationPath,
                     overwrite: overwrite,
-                    recordID: id
+                    recordID: id,
+                    requestedResumeOffset: records.first(where: { $0.id == id })?.transferredBytes ?? 0
                 )
             } else {
+                update(id) { $0.transferredBytes = 0; $0.progress = 0.05 }
                 let tempURL = try await CacheManager.shared.temporaryURL(fileName: item.name)
                 defer { try? FileManager.default.removeItem(at: tempURL) }
                 try await source.download(path: item.path, to: tempURL)
@@ -178,11 +179,20 @@ final class TransferEngine: ObservableObject {
         writer: any RemoteChunkWritableProvider,
         destinationPath: String,
         overwrite: Bool,
-        recordID: UUID
+        recordID: UUID,
+        requestedResumeOffset: UInt64
     ) async throws {
-        try await writer.prepareChunkedUpload(path: destinationPath, overwrite: overwrite)
         let chunkSize = 1024 * 1024
-        var offset: UInt64 = 0
+        var offset = try await writer.prepareChunkedUpload(
+            path: destinationPath,
+            overwrite: overwrite,
+            resumeOffset: min(requestedResumeOffset, totalBytes)
+        )
+        update(recordID) {
+            $0.transferredBytes = offset
+            let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
+            $0.progress = 0.05 + 0.9 * min(1, fraction)
+        }
         while offset < totalBytes {
             try Task.checkCancellation()
             let remaining = totalBytes - offset
@@ -194,7 +204,10 @@ final class TransferEngine: ObservableObject {
             try await writer.writeChunk(path: destinationPath, data: data, offset: offset)
             offset += UInt64(data.count)
             let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
-            update(recordID) { $0.progress = 0.05 + 0.9 * min(1, fraction) }
+            update(recordID) {
+                $0.transferredBytes = offset
+                $0.progress = 0.05 + 0.9 * min(1, fraction)
+            }
         }
         try await writer.finishChunkedUpload(path: destinationPath)
     }
@@ -215,7 +228,6 @@ final class TransferEngine: ObservableObject {
               var decoded = try? JSONDecoder().decode([TransferRecord].self, from: data) else { return }
         for index in decoded.indices where decoded[index].state == .running {
             decoded[index].state = .queued
-            decoded[index].progress = 0
             decoded[index].errorMessage = nil
         }
         records = decoded

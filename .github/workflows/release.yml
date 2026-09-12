@@ -1,0 +1,108 @@
+name: Release IPA
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select and verify Xcode 26
+        run: |
+          set -euo pipefail
+          VERSION_OUTPUT="$(xcodebuild -version)"
+          CURRENT="${VERSION_OUTPUT%%$'\n'*}"
+          if ! grep -Eq '^Xcode 26([.]|$)' <<< "$CURRENT"; then
+            XCODE_APP="$(find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' -print | sort -V | tail -n 1)"
+            test -n "$XCODE_APP"
+            sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Read version and validate tag
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="$(awk '/MARKETING_VERSION:/ {print $2; exit}' project.yml)"
+          BUILD="$(awk '/CURRENT_PROJECT_VERSION:/ {print $2; exit}' project.yml)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match MARKETING_VERSION $VERSION" >&2
+            exit 1
+          fi
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project RemoteFiles.xcodeproj \
+            -scheme RemoteFiles \
+            -derivedDataPath .derivedData
+
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project RemoteFiles.xcodeproj \
+            -scheme RemoteFiles \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath .derivedData-release \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build \
+            | tee release-build.log
+
+      - name: Package unsigned IPA
+        id: package
+        run: |
+          set -euo pipefail
+          APP=".derivedData-release/Build/Products/Release-iphoneos/RemoteFiles.app"
+          test -d "$APP"
+          mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+          IPA="RemoteFiles-${{ steps.version.outputs.version }}-build${{ steps.version.outputs.build }}-unsigned.ipa"
+          (cd dist && /usr/bin/zip -qry "$IPA" Payload)
+          shasum -a 256 "dist/$IPA" | tee "dist/$IPA.sha256"
+          echo "ipa=dist/$IPA" >> "$GITHUB_OUTPUT"
+          echo "sha=dist/$IPA.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RemoteFiles-${{ steps.version.outputs.version }}-unsigned-ipa
+          path: |
+            ${{ steps.package.outputs.ipa }}
+            ${{ steps.package.outputs.sha }}
+            release-build.log
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.package.outputs.ipa }}" \
+            "${{ steps.package.outputs.sha }}" \
+            --title "RemoteFiles $GITHUB_REF_NAME" \
+            --generate-notes

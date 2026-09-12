@@ -40,7 +40,8 @@ protocol RemoteChunkReadableProvider: Sendable {
 }
 
 protocol RemoteChunkWritableProvider: Sendable {
-    func prepareChunkedUpload(path: String, overwrite: Bool) async throws
+    /// Prepare a destination for chunked writes. Returns the byte offset that can safely resume.
+    func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64
     func writeChunk(path: String, data: Data, offset: UInt64) async throws
     func finishChunkedUpload(path: String) async throws
 }
