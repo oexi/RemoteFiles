@@ -261,6 +261,14 @@ final class TransferEngine: ObservableObject {
         persist()
     }
 
+    func remove(_ record: TransferRecord) {
+        guard record.state != .running, record.state != .queued else { return }
+        tasks[record.id]?.cancel()
+        tasks[record.id] = nil
+        records.removeAll { $0.id == record.id }
+        persist()
+    }
+
     private func update(_ id: UUID, _ mutation: (inout TransferRecord) -> Void) {
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         mutation(&records[index])

@@ -41,10 +41,17 @@ struct TransferListView: View {
                             Label("Cancel", systemImage: "xmark")
                         }
                     } else if record.state == .failed || record.state == .cancelled {
+                        Button(role: .destructive) { engine.remove(record) } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                         Button { engine.retry(record, using: connections) } label: {
                             Label("Retry", systemImage: "arrow.clockwise")
                         }
                         .tint(.blue)
+                    } else if record.state == .completed {
+                        Button(role: .destructive) { engine.remove(record) } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
                     }
                 }
             }
