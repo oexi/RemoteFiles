@@ -62,8 +62,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 defer { Task { await provider.disconnect() } }
                 let path = try codec.path(for: itemIdentifier)
                 let remote = try await provider.attributes(path: path)
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("RemoteFiles-FP-\(UUID().uuidString)-\(remote.name)")
+                let directory = try NSFileProviderManager(for: domain)?.temporaryDirectoryURL()
+                    ?? FileManager.default.temporaryDirectory
+                let url = directory.appendingPathComponent("RemoteFiles-FP-\(UUID().uuidString)-\(remote.name)")
                 try await provider.download(path: path, to: url)
                 progress.completedUnitCount = 100
                 completionHandler(url, FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities), nil)

@@ -13,7 +13,8 @@ final class TransferRecordTests: XCTestCase {
             destinationPath: "/dest/movie.mkv",
             overwrite: true,
             source: "Source:/source/movie.mkv",
-            destination: "Destination:/dest/movie.mkv"
+            destination: "Destination:/dest/movie.mkv",
+            totalBytes: 123456
         )
 
         let decoded = try JSONDecoder().decode(
@@ -26,5 +27,6 @@ final class TransferRecordTests: XCTestCase {
         XCTAssertEqual(decoded.sourcePath, "/source/movie.mkv")
         XCTAssertEqual(decoded.destinationPath, "/dest/movie.mkv")
         XCTAssertTrue(decoded.overwrite)
+        XCTAssertEqual(decoded.totalBytes, 123456)
     }
 }

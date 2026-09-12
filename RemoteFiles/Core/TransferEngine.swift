@@ -30,7 +30,8 @@ final class TransferEngine: ObservableObject {
             destinationPath: destinationPath,
             overwrite: overwrite,
             source: "\(source.profile.name):\(item.path)",
-            destination: "\(destination.profile.name):\(destinationPath)"
+            destination: "\(destination.profile.name):\(destinationPath)",
+            totalBytes: item.size
         )
         records.insert(record, at: 0)
         persist()
@@ -86,6 +87,7 @@ final class TransferEngine: ObservableObject {
                 let destination = try ProviderFactory.make(for: destinationProfile)
                 try await source.connect()
                 let item = try await source.attributes(path: record.sourcePath)
+                self.update(id) { $0.totalBytes = item.size }
                 await self.perform(
                     recordID: id,
                     item: item,
@@ -162,6 +164,14 @@ final class TransferEngine: ObservableObject {
                 try await destination.upload(from: tempURL, to: destinationPath, overwrite: overwrite)
             }
             try Task.checkCancellation()
+            if let expected = item.size,
+               let destinationItem = try? await destination.attributes(path: destinationPath),
+               let actual = destinationItem.size,
+               expected != actual {
+                throw RemoteProviderError.invalidResponse(
+                    "Transfer verification failed: expected \(expected) bytes but destination reports \(actual) bytes."
+                )
+            }
             update(id) { $0.state = .completed; $0.progress = 1; $0.errorMessage = nil }
         } catch is CancellationError {
             update(id) { $0.state = .cancelled; $0.errorMessage = nil }

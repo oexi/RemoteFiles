@@ -35,7 +35,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                     items: remoteItems
                 )
                 guard !Task.isCancelled else { return }
-                let pageSize = max(1, observer.suggestedPageSize)
+                let pageSize = max(1, observer.suggestedPageSize ?? 200)
                 var index = 0
                 while index < items.count {
                     guard !Task.isCancelled else { return }
@@ -95,7 +95,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                     let changedItems = changedRemote.map {
                         FileProviderItem(remote: $0, codec: codec, providerCapabilities: provider.capabilities)
                     }
-                    let batchSize = max(1, observer.suggestedBatchSize)
+                    let batchSize = max(1, observer.suggestedBatchSize ?? 200)
                     var index = 0
                     while index < changedItems.count {
                         guard !Task.isCancelled else { return }

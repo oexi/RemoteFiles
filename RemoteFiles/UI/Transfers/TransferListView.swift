@@ -15,6 +15,17 @@ struct TransferListView: View {
                         Text(record.state.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
                     }
                     ProgressView(value: record.progress)
+                    if let transferred = record.transferredBytes, transferred > 0 {
+                        HStack(spacing: 4) {
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: transferred), countStyle: .file))
+                            if let total = record.totalBytes, total > 0 {
+                                Text("of")
+                                Text(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
                     Text("\(record.source) → \(record.destination)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)

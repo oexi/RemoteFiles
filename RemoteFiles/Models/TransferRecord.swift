@@ -17,6 +17,7 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
     var state: TransferState
     var progress: Double
     var transferredBytes: UInt64?
+    var totalBytes: Int64?
     var errorMessage: String?
 
     init(
@@ -27,7 +28,8 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         destinationPath: String,
         overwrite: Bool,
         source: String,
-        destination: String
+        destination: String,
+        totalBytes: Int64? = nil
     ) {
         id = UUID()
         self.fileName = fileName
@@ -41,6 +43,7 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         state = .queued
         progress = 0
         transferredBytes = 0
+        self.totalBytes = totalBytes
     }
 }
 
