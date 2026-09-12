@@ -7,6 +7,7 @@ final class BrowserViewModel: ObservableObject {
     @Published private(set) var items: [RemoteItem] = []
     @Published private(set) var currentPath: String
     @Published private(set) var loading = false
+    @Published private(set) var uploading = false
     @Published var errorMessage: String?
 
     private(set) var provider: (any RemoteFileProvider)?
@@ -84,11 +85,22 @@ final class BrowserViewModel: ObservableObject {
 
     func upload(localURLs: [URL]) async {
         guard let provider else { return }
+        uploading = true
+        defer { uploading = false }
+
+        let stagingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesImports", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+
         do {
+            try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: stagingRoot) }
+
             for url in localURLs {
-                let access = url.startAccessingSecurityScopedResource()
-                defer { if access { url.stopAccessingSecurityScopedResource() } }
-                try await uploadRecursively(localURL: url, remoteParent: currentPath, provider: provider)
+                let stagedURL = try await Task.detached(priority: .userInitiated) {
+                    try Self.stageImportedURL(url, under: stagingRoot)
+                }.value
+                try await uploadRecursively(localURL: stagedURL, remoteParent: currentPath, provider: provider)
             }
             await refresh()
         } catch { errorMessage = error.localizedDescription }
@@ -129,6 +141,35 @@ final class BrowserViewModel: ObservableObject {
         } else {
             try await provider.upload(from: localURL, to: remotePath, overwrite: false)
         }
+    }
+
+    private nonisolated static func stageImportedURL(_ sourceURL: URL, under stagingRoot: URL) throws -> URL {
+        let access = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if access { sourceURL.stopAccessingSecurityScopedResource() }
+        }
+
+        let container = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        let destination = container.appendingPathComponent(sourceURL.lastPathComponent)
+
+        var coordinationError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(
+            readingItemAt: sourceURL,
+            options: [],
+            error: &coordinationError
+        ) { coordinatedURL in
+            do {
+                try FileManager.default.copyItem(at: coordinatedURL, to: destination)
+            } catch {
+                copyError = error
+            }
+        }
+
+        if let coordinationError { throw coordinationError }
+        if let copyError { throw copyError }
+        return destination
     }
 }
 

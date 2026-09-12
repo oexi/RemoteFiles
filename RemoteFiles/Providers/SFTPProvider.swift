@@ -83,28 +83,79 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
 
     func download(path: String, to localURL: URL) async throws {
         let sftp = try await client()
+        let normalized = RemotePath.normalize(path)
+        let expectedSize: UInt64?
+        if let remoteAttributes = try? await sftp.getAttributes(at: normalized) {
+            expectedSize = remoteAttributes.size
+        } else {
+            expectedSize = nil
+        }
         try? FileManager.default.removeItem(at: localURL)
         FileManager.default.createFile(atPath: localURL.path, contents: nil)
         let output = try FileHandle(forWritingTo: localURL)
         defer { try? output.close() }
-        try await sftp.withFile(filePath: RemotePath.normalize(path), flags: .read) { file in
+
+        let file: SFTPFile
+        do {
+            file = try await sftp.openFile(filePath: normalized, flags: .read)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "open \(normalized) for reading")
+        }
+        do {
             var offset: UInt64 = 0
-            while true {
-                let buffer = try await file.read(from: offset, length: 1_048_576)
-                let count = buffer.readableBytes
-                if count == 0 { break }
-                try output.write(contentsOf: Data(buffer.readableBytesView))
-                offset += UInt64(count)
+            if let expectedSize {
+                while offset < expectedSize {
+                    let remaining = expectedSize - offset
+                    let requestLength = UInt32(min(UInt64(1_048_576), remaining))
+                    let buffer = try await file.read(from: offset, length: requestLength)
+                    let count = buffer.readableBytes
+                    guard count > 0 else {
+                        throw RemoteProviderError.invalidResponse("The SFTP server ended the file before the advertised size was reached.")
+                    }
+                    try output.write(contentsOf: Data(buffer.readableBytesView))
+                    offset += UInt64(count)
+                }
+            } else {
+                while true {
+                    let buffer = try await file.read(from: offset, length: 1_048_576)
+                    let count = buffer.readableBytes
+                    if count == 0 { break }
+                    try output.write(contentsOf: Data(buffer.readableBytesView))
+                    offset += UInt64(count)
+                }
             }
+
+            // Embedded SFTP servers can return a non-OK status for CLOSE even when every
+            // requested byte was transferred successfully. A completed download should not
+            // be discarded solely because CLOSE is quirky.
+            try? await file.close()
+        } catch {
+            try? await file.close()
+            throw Self.normalizedSFTPError(error, operation: "download \(normalized)")
         }
     }
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
         let sftp = try await client()
+        let normalized = RemotePath.normalize(path)
         let flags: SFTPOpenFileFlags = overwrite ? [.write, .create, .truncate] : [.write, .create, .forceCreate]
         let input = try FileHandle(forReadingFrom: localURL)
         defer { try? input.close() }
-        try await sftp.withFile(filePath: RemotePath.normalize(path), flags: flags) { file in
+        let localSize: Int64?
+        if let values = try? localURL.resourceValues(forKeys: [.fileSizeKey]),
+           let size = values.fileSize {
+            localSize = Int64(size)
+        } else {
+            localSize = nil
+        }
+        let file: SFTPFile
+        do {
+            file = try await sftp.openFile(filePath: normalized, flags: flags)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "open \(normalized) for writing")
+        }
+
+        do {
             var offset: UInt64 = 0
             while let data = try input.read(upToCount: 1_048_576), !data.isEmpty {
                 var buffer = ByteBufferAllocator().buffer(capacity: data.count)
@@ -112,14 +163,39 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
                 try await file.write(buffer, at: offset)
                 offset += UInt64(data.count)
             }
+
+            do {
+                try await file.close()
+            } catch {
+                if let localSize,
+                   let remote = try? await attributes(path: normalized),
+                   remote.size == localSize {
+                    return
+                }
+                throw error
+            }
+        } catch {
+            try? await file.close()
+            throw Self.normalizedSFTPError(error, operation: "upload \(normalized)")
         }
     }
 
     func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
         let sftp = try await client()
-        return try await sftp.withFile(filePath: RemotePath.normalize(path), flags: .read) { file in
+        let normalized = RemotePath.normalize(path)
+        let file: SFTPFile
+        do {
+            file = try await sftp.openFile(filePath: normalized, flags: .read)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "open \(normalized) for reading")
+        }
+        do {
             let buffer = try await file.read(from: offset, length: UInt32(clamping: length))
+            try? await file.close()
             return Data(buffer.readableBytesView)
+        } catch {
+            try? await file.close()
+            throw Self.normalizedSFTPError(error, operation: "read \(normalized)")
         }
     }
 
@@ -202,6 +278,25 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         case 0o040000: return .directory
         case 0o120000: return .symbolicLink
         default: return .file
+        }
+    }
+
+    private static func normalizedSFTPError(_ error: Error, operation: String) -> Error {
+        guard let status = error as? SFTPMessage.Status else { return error }
+        let serverMessage = status.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = serverMessage.isEmpty ? "" : " Server message: \(serverMessage)"
+
+        switch status.errorCode {
+        case .eof:
+            return RemoteProviderError.invalidResponse("The SFTP server reported an unexpected end of file while trying to \(operation).\(suffix)")
+        case .noSuchFile:
+            return RemoteProviderError.invalidResponse("The remote file no longer exists while trying to \(operation).\(suffix)")
+        case .permissionDenied:
+            return RemoteProviderError.invalidResponse("The SFTP server denied permission to \(operation).\(suffix)")
+        case .unsupportedOperation:
+            return RemoteProviderError.unsupported("The SFTP server does not support the operation required to \(operation).\(suffix)")
+        default:
+            return RemoteProviderError.invalidResponse("The SFTP server returned status \(status.errorCode.rawValue) while trying to \(operation).\(suffix)")
         }
     }
 }

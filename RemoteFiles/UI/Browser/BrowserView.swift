@@ -17,7 +17,8 @@ struct BrowserView: View {
     @StateObject private var model: BrowserViewModel
     @State private var showingFolderPrompt = false
     @State private var newFolderName = ""
-    @State private var importSelection: ImportSelection?
+    @State private var importSelection: ImportSelection = .files
+    @State private var showingImporter = false
     @State private var searchText = ""
     @State private var renameItem: RemoteItem?
     @State private var renameText = ""
@@ -28,6 +29,118 @@ struct BrowserView: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            browserHeader
+            fileList
+        }
+        .navigationTitle(model.profile.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if model.canGoUp {
+                    Button { Task { await model.goUp() } } label: { Image(systemName: "arrow.up") }
+                }
+                Menu {
+                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                    if model.capabilities.contains(.createDirectory) {
+                        Button("New Folder", systemImage: "folder.badge.plus") { showingFolderPrompt = true }
+                    }
+                    if model.capabilities.contains(.write) {
+                        Button("Upload Files", systemImage: "square.and.arrow.up") {
+                            importSelection = .files
+                            showingImporter = true
+                        }
+                        Button("Upload Folder", systemImage: "folder.badge.plus") {
+                            importSelection = .folder
+                            showingImporter = true
+                        }
+                    }
+                } label: { Image(systemName: "ellipsis.circle") }
+            }
+        }
+        .onChange(of: searchText) { _, _ in displayLimit = 200 }
+        .onChange(of: model.currentPath) { _, _ in displayLimit = 200 }
+        .task { await model.start() }
+        .alert("New Folder", isPresented: $showingFolderPrompt) {
+            TextField("Folder name", text: $newFolderName)
+            Button("Cancel", role: .cancel) { newFolderName = "" }
+            Button("Create") {
+                let name = newFolderName
+                newFolderName = ""
+                Task { await model.createFolder(name: name) }
+            }
+        }
+        .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
+            Button("OK") { model.errorMessage = nil }
+        } message: { Text(model.errorMessage ?? "Unknown error") }
+        .fileImporter(
+            isPresented: $showingImporter,
+            allowedContentTypes: importSelection.allowedContentTypes,
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls): Task { await model.upload(localURLs: urls) }
+            case .failure(let error): model.errorMessage = error.localizedDescription
+            }
+        }
+        .alert("Rename", isPresented: Binding(
+            get: { renameItem != nil },
+            set: { if !$0 { renameItem = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { renameItem = nil }
+            Button("Rename") {
+                guard let item = renameItem else { return }
+                let name = renameText
+                renameItem = nil
+                Task { await model.rename(item, to: name) }
+            }
+        }
+    }
+
+    private var browserHeader: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "folder")
+                Text(model.currentPath)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                if model.uploading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Uploading")
+                }
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("Search this folder", text: $searchText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear Search")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 7)
+        .background(.bar)
+    }
+
+    private var fileList: some View {
         List {
             if model.loading && model.items.isEmpty {
                 HStack { Spacer(); ProgressView(); Spacer() }
@@ -68,104 +181,7 @@ struct BrowserView: View {
                 ContentUnavailableView("Empty Folder", systemImage: "folder", description: Text(model.currentPath))
             }
         }
-        .navigationTitle(model.profile.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "folder")
-                    Text(model.currentPath)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer()
-                }
-
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Search this folder", text: $searchText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    if !searchText.isEmpty {
-                        Button {
-                            searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Clear Search")
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 7)
-            .background(.bar)
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                if model.canGoUp {
-                    Button { Task { await model.goUp() } } label: { Image(systemName: "arrow.up") }
-                }
-                Menu {
-                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                    if model.capabilities.contains(.createDirectory) {
-                        Button("New Folder", systemImage: "folder.badge.plus") { showingFolderPrompt = true }
-                    }
-                    if model.capabilities.contains(.write) {
-                        Button("Upload Files", systemImage: "square.and.arrow.up") { importSelection = .files }
-                        Button("Upload Folder", systemImage: "folder.badge.plus") { importSelection = .folder }
-                    }
-                } label: { Image(systemName: "ellipsis.circle") }
-            }
-        }
         .refreshable { await model.refresh() }
-        .onChange(of: searchText) { _, _ in displayLimit = 200 }
-        .onChange(of: model.currentPath) { _, _ in displayLimit = 200 }
-        .task { await model.start() }
-        .alert("New Folder", isPresented: $showingFolderPrompt) {
-            TextField("Folder name", text: $newFolderName)
-            Button("Cancel", role: .cancel) { newFolderName = "" }
-            Button("Create") {
-                let name = newFolderName
-                newFolderName = ""
-                Task { await model.createFolder(name: name) }
-            }
-        }
-        .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
-            Button("OK") { model.errorMessage = nil }
-        } message: { Text(model.errorMessage ?? "Unknown error") }
-        .fileImporter(
-            isPresented: Binding(
-                get: { importSelection != nil },
-                set: { if !$0 { importSelection = nil } }
-            ),
-            allowedContentTypes: importSelection?.allowedContentTypes ?? [.item],
-            allowsMultipleSelection: true
-        ) { result in
-            importSelection = nil
-            switch result {
-            case .success(let urls): Task { await model.upload(localURLs: urls) }
-            case .failure(let error): model.errorMessage = error.localizedDescription
-            }
-        }
-        .alert("Rename", isPresented: Binding(
-            get: { renameItem != nil },
-            set: { if !$0 { renameItem = nil } }
-        )) {
-            TextField("Name", text: $renameText)
-            Button("Cancel", role: .cancel) { renameItem = nil }
-            Button("Rename") {
-                guard let item = renameItem else { return }
-                let name = renameText
-                renameItem = nil
-                Task { await model.rename(item, to: name) }
-            }
-        }
     }
 
     private var filteredItems: [RemoteItem] {

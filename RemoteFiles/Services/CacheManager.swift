@@ -20,7 +20,12 @@ actor CacheManager {
         let fileName = ext.isEmpty ? key : "\(key).\(ext)"
         let destination = directory.appendingPathComponent(fileName)
         if forceRefresh || !FileManager.default.fileExists(atPath: destination.path) {
-            try await provider.download(path: item.path, to: destination)
+            do {
+                try await provider.download(path: item.path, to: destination)
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
         }
         return destination
     }
