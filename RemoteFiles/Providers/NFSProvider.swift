@@ -3,7 +3,7 @@ import NFSKit
 
 final class NFSProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
-    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .symbolicLinks])
+    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .permissions, .symbolicLinks])
     let client: NFSClient
     var connected = false
 

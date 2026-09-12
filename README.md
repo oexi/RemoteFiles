@@ -20,6 +20,8 @@ RemoteFiles 是一款面向 iPhone 和 iPad 的多协议远程文件管理器，
 - 支持 ZIP、7z、RAR/RAR5、TAR、tar.gz、tar.bz2、tar.xz、GZip、BZip2 和 XZ 的浏览或解压。
 - 登录凭据保存在系统 Keychain 中。
 - SFTP 支持密码以及 OpenSSH Ed25519/RSA 私钥认证，可保存私钥 passphrase。
+- SFTP 与 NFS 支持查看和修改 Unix 权限；FTP/FTPS 在服务器支持 `SITE CHMOD` 时自动启用 Unix 权限查看和修改。
+- SMB 支持读取 Windows Security Descriptor，查看 Owner、Group 与 DACL 访问控制条目。
 - SFTP 支持查看 Unix 文件权限，并通过八进制模式修改文件或目录权限。
 - SFTP 首次连接会记录 SSH Host Key，后续密钥发生变化时阻止连接。
 - 内置连接诊断，可检查网络连通、协议认证、目录访问和服务器能力。

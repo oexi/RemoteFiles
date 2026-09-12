@@ -27,6 +27,7 @@ struct BrowserView: View {
     @State private var selectedPaths: Set<String> = []
     @State private var showingBatchDeleteConfirmation = false
     @State private var permissionItem: RemoteItem?
+    @State private var accessControlItem: RemoteItem?
     @State private var pendingDeleteItem: RemoteItem?
 
     init(profile: ConnectionProfile) {
@@ -153,6 +154,11 @@ struct BrowserView: View {
                 PermissionsEditorView(provider: provider, item: item)
             }
         }
+        .sheet(item: $accessControlItem) { item in
+            if let provider = model.provider {
+                AccessControlView(provider: provider, item: item)
+            }
+        }
     }
 
     private var browserHeader: some View {
@@ -268,6 +274,14 @@ struct BrowserView: View {
                                     Label("Permissions", systemImage: "lock.shield")
                                 }
                                 .tint(.orange)
+                            }
+                            if model.capabilities.contains(.accessControl) {
+                                Button {
+                                    accessControlItem = item
+                                } label: {
+                                    Label("Access Control", systemImage: "person.badge.key")
+                                }
+                                .tint(.purple)
                             }
                         }
                 }

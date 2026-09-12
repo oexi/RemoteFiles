@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: 5.9
-    CURRENT_PROJECT_VERSION: 9
-    MARKETING_VERSION: 0.3.0
+    CURRENT_PROJECT_VERSION: 10
+    MARKETING_VERSION: 0.3.1
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     TARGETED_DEVICE_FAMILY: "1,2"
     SUPPORTS_MACCATALYST: NO
@@ -26,14 +26,14 @@ packages:
     url: https://github.com/simonbs/Runestone.git
     revision: 592434a103a4d1ab83e14f87ac6eef569dd7a99d
   SMBClient:
-    url: https://github.com/kishikawakatsumi/SMBClient.git
-    revision: 66eafaa6d17e034e8036dee4b3ebc1b52cb53919
+    url: https://github.com/oexi/SMBClient.git
+    revision: cda497004018fa1384968c9ffea1236a0fc141f3
   NFSKit:
-    url: https://github.com/alexiscn/NFSKit.git
-    revision: ec63d055b9ee08d609d3c6cb32f42c07edc7bdf7
+    url: https://github.com/oexi/NFSKit.git
+    revision: b87f5587e1514899fa8ed383300b53ece35f4437
   FilesProvider:
-    url: https://github.com/amosavian/FileProvider.git
-    revision: 5d31778376af168ac917e0b1e8d2c4ee64cb246c
+    url: https://github.com/oexi/FileProvider.git
+    revision: 1c5248020bd9274f1ccd6b4147c25fa323c60930
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
     revision: ae8562f895de06ccb86fdb1cbb65fd99c8976e12

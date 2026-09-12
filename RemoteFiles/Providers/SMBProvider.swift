@@ -3,7 +3,7 @@ import SMBClient
 
 final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, RemoteChunkWritableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
-    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume])
+    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .accessControl])
 
     private let credential: Credential?
     private let client: SMBClient
@@ -172,6 +172,15 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
             throw RemoteProviderError.conflict("An item already exists at \(to).")
         }
         try await client.move(from: smbPath(from), to: smbPath(to))
+    }
+
+    func accessControl(path: String) async throws -> RemoteAccessControlInfo {
+        try await ensureConnected()
+        let descriptor = try await client.session.querySecurityDescriptor(
+            path: smbPath(path),
+            securityInformation: [.owner, .group, .dacl]
+        )
+        return try WindowsSecurityDescriptorParser.parse(descriptor)
     }
 
     private func ensureConnected() async throws {

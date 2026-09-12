@@ -10,6 +10,7 @@ struct FileDetailView: View {
 
     @State private var showingDestinations = false
     @State private var showingPermissions = false
+    @State private var showingAccessControl = false
     @State private var copyError: String?
     @State private var offlineWorking = false
 
@@ -45,6 +46,13 @@ struct FileDetailView: View {
                     }
                 }
             }
+            if provider.capabilities.contains(.accessControl) {
+                ToolbarItem(placement: .secondaryAction) {
+                    Button("Access Control", systemImage: "person.badge.key") {
+                        showingAccessControl = true
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showingDestinations) {
             CopyDestinationView(
@@ -72,6 +80,9 @@ struct FileDetailView: View {
         }
         .sheet(isPresented: $showingPermissions) {
             PermissionsEditorView(provider: provider, item: item)
+        }
+        .sheet(isPresented: $showingAccessControl) {
+            AccessControlView(provider: provider, item: item)
         }
     }
 

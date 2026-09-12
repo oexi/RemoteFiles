@@ -3,9 +3,14 @@ import Foundation
 
 final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
-    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .copy, .resume])
+    var capabilities: ProviderCapabilities {
+        var values: Set<ProviderCapability> = [.list, .read, .write, .createDirectory, .delete, .move, .copy, .resume]
+        if chmodSupported { values.insert(.permissions) }
+        return ProviderCapabilities(values)
+    }
 
     private let provider: FTPFileProvider
+    private var chmodSupported = false
 
     init(profile: ConnectionProfile, credential: Credential?) throws {
         self.profile = profile
@@ -45,6 +50,7 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
                 else { continuation.resume(throwing: RemoteProviderError.notConnected) }
             }
         }
+        chmodSupported = await detectCHMODSupport()
     }
 
     func list(path: String) async throws -> [RemoteItem] {
@@ -80,6 +86,7 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
             }
         }
         let name = object.name.isEmpty ? (path as NSString).lastPathComponent : object.name
+        let permissions = chmodSupported ? (try? await unixPermissions(path: path)) : nil
         return RemoteItem(
             name: name,
             path: RemotePath.normalize(path),
@@ -88,8 +95,23 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
             modifiedAt: object.modifiedDate,
             createdAt: object.creationDate,
             isHidden: object.isHidden || name.hasPrefix("."),
+            permissions: permissions,
             revision: .init(modifiedAt: object.modifiedDate, size: object.size >= 0 ? object.size : nil)
         )
+    }
+
+    func setPermissions(path: String, permissions: UInt32) async throws {
+        guard chmodSupported else {
+            throw RemoteProviderError.unsupported("This FTP server does not advertise SITE CHMOD support.")
+        }
+        guard !path.contains("\r"), !path.contains("\n") else {
+            throw RemoteProviderError.invalidConfiguration("The FTP path contains an unsupported line break.")
+        }
+        let mode = String(format: "%04o", permissions & 0o7777)
+        let response = try await controlCommand("SITE CHMOD \(mode) \(ftpPath(path))")
+        guard Self.replyCode(response).map({ (200..<300).contains($0) }) == true else {
+            throw RemoteProviderError.invalidResponse("The FTP server rejected SITE CHMOD. Server response: \(response)")
+        }
     }
 
     func download(path: String, to localURL: URL) async throws {
@@ -147,6 +169,77 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
     private func ftpPath(_ path: String) -> String {
         let normalized = RemotePath.normalize(path)
         return normalized == "/" ? "/" : normalized
+    }
+
+    private func detectCHMODSupport() async -> Bool {
+        if let response = try? await controlCommand("SITE HELP CHMOD"),
+           let code = Self.replyCode(response),
+           (200..<300).contains(code) {
+            return true
+        }
+        if let response = try? await controlCommand("FEAT"),
+           let code = Self.replyCode(response),
+           (200..<300).contains(code),
+           response.uppercased().contains("CHMOD") {
+            return true
+        }
+        return false
+    }
+
+    private func unixPermissions(path: String) async throws -> UInt32 {
+        guard !path.contains("\r"), !path.contains("\n") else {
+            throw RemoteProviderError.invalidConfiguration("The FTP path contains an unsupported line break.")
+        }
+        let response = try await controlCommand("STAT \(ftpPath(path))")
+        guard Self.replyCode(response).map({ (200..<300).contains($0) }) == true else {
+            throw RemoteProviderError.invalidResponse("The FTP server did not return file status information.")
+        }
+        for rawLine in response.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard line.count >= 10 else { continue }
+            let chars = Array(line.prefix(10))
+            guard chars[0] == "-" || chars[0] == "d" || chars[0] == "l" else { continue }
+            if let mode = Self.parseUnixMode(String(chars[1...9])) { return mode }
+        }
+        throw RemoteProviderError.invalidResponse("The FTP server returned no Unix permission bits for this item.")
+    }
+
+    private func controlCommand(_ command: String) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.executeControlCommand(command) { response, error in
+                if let error { continuation.resume(throwing: error) }
+                else if let response { continuation.resume(returning: response) }
+                else { continuation.resume(throwing: RemoteProviderError.invalidResponse("FTP returned no control response.")) }
+            }
+        }
+    }
+
+    static func replyCode(_ response: String) -> Int? {
+        for line in response.components(separatedBy: .newlines).reversed() {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 3 else { continue }
+            let prefix = String(trimmed.prefix(3))
+            if let value = Int(prefix) { return value }
+        }
+        return nil
+    }
+
+    static func parseUnixMode(_ text: String) -> UInt32? {
+        let chars = Array(text)
+        guard chars.count == 9 else { return nil }
+        var mode: UInt32 = 0
+        let basic: [(Int, Character, UInt32)] = [
+            (0, "r", 0o400), (1, "w", 0o200), (2, "x", 0o100),
+            (3, "r", 0o040), (4, "w", 0o020), (5, "x", 0o010),
+            (6, "r", 0o004), (7, "w", 0o002), (8, "x", 0o001)
+        ]
+        for (index, expected, bit) in basic where chars[index] == expected { mode |= bit }
+        if chars[2] == "s" || chars[2] == "S" { mode |= 0o4000; if chars[2] == "s" { mode |= 0o100 } }
+        if chars[5] == "s" || chars[5] == "S" { mode |= 0o2000; if chars[5] == "s" { mode |= 0o010 } }
+        if chars[8] == "t" || chars[8] == "T" { mode |= 0o1000; if chars[8] == "t" { mode |= 0o001 } }
+        let allowed: Set<Character> = ["r", "w", "x", "-", "s", "S", "t", "T"]
+        guard chars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return mode
     }
 }
 

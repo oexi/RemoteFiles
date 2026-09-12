@@ -3,7 +3,7 @@ import Foundation
 enum ProviderCapability: String, CaseIterable, Codable, Hashable, Sendable {
     case list, read, write, createDirectory, delete, move, copy
     case randomRead, randomWrite, resume, serverSideCopy
-    case permissions, symbolicLinks, search, trash, fileRevisions
+    case permissions, accessControl, symbolicLinks, search, trash, fileRevisions
 }
 
 struct ProviderCapabilities: Hashable, Sendable {

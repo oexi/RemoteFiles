@@ -38,7 +38,7 @@ struct PermissionsEditorView: View {
                 } header: {
                     Text("Unix Permissions")
                 } footer: {
-                    Text("Enter an octal Unix mode from 0000 to 7777. SFTP servers may reject permission changes for files you do not own.")
+                    Text("Enter an octal Unix mode from 0000 to 7777. The server may reject permission changes for files you do not own or when its permission extension is read-only.")
                 }
 
                 if loading {
