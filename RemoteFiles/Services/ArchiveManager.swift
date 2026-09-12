@@ -186,7 +186,7 @@ enum ArchiveManager {
             case .symbolicLink:
                 // Do not materialize links from untrusted archives; links can escape the extraction root.
                 continue
-            case .file:
+            case .file, .unknown:
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 guard let data else { continue }
                 try data.write(to: target, options: .atomic)

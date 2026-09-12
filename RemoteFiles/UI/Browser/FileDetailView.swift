@@ -13,7 +13,6 @@ struct FileDetailView: View {
     @State private var offlineWorking = false
 
     var body: some View {
-        let ext = (item.name as NSString).pathExtension.lowercased()
         Group {
             if EditorLanguage.isEditable(fileName: item.name) {
                 RemoteEditorView(provider: provider, item: item)
