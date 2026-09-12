@@ -1,6 +1,5 @@
 import Citadel
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ConnectionEditorView: View {
     @Environment(\.dismiss) private var dismiss
@@ -136,29 +135,19 @@ struct ConnectionEditorView: View {
                 if profile.port == oldValue.defaultPort { profile.port = newValue.defaultPort }
                 if profile.name == oldValue.title { profile.name = newValue.title }
             }
-            .fileImporter(
-                isPresented: $showingPrivateKeyImporter,
-                allowedContentTypes: [.data, .plainText],
-                allowsMultipleSelection: false
-            ) { result in
-                do {
-                    guard let url = try result.get().first else { return }
-                    let access = url.startAccessingSecurityScopedResource()
-                    defer { if access { url.stopAccessingSecurityScopedResource() } }
-                    let data = try Data(contentsOf: url)
-                    guard data.count <= 1024 * 1024 else {
-                        throw RemoteProviderError.invalidConfiguration("The private key file is unexpectedly large.")
+            .sheet(isPresented: $showingPrivateKeyImporter) {
+                SystemDocumentPicker(
+                    mode: .privateKey,
+                    onPick: { urls in
+                        showingPrivateKeyImporter = false
+                        guard let url = urls.first else { return }
+                        importPrivateKey(from: url)
+                    },
+                    onCancel: {
+                        showingPrivateKeyImporter = false
                     }
-                    guard let keyString = String(data: data, encoding: .utf8) else {
-                        throw RemoteProviderError.invalidConfiguration("The private key must be UTF-8 text.")
-                    }
-                    _ = try SSHKeyDetection.detectPrivateKeyType(from: keyString)
-                    privateKey = data
-                    privateKeyName = url.lastPathComponent
-                    testMessage = "Private key imported. Test the connection before saving."
-                } catch {
-                    testMessage = error.localizedDescription
-                }
+                )
+                .ignoresSafeArea()
             }
             .sheet(isPresented: $showingDiagnostics) {
                 ConnectionDiagnosticView(
@@ -172,6 +161,24 @@ struct ConnectionEditorView: View {
                     )
                 )
             }
+        }
+    }
+
+    private func importPrivateKey(from url: URL) {
+        do {
+            let data = try Data(contentsOf: url)
+            guard data.count <= 1024 * 1024 else {
+                throw RemoteProviderError.invalidConfiguration("The private key file is unexpectedly large.")
+            }
+            guard let keyString = String(data: data, encoding: .utf8) else {
+                throw RemoteProviderError.invalidConfiguration("The private key must be UTF-8 text.")
+            }
+            _ = try SSHKeyDetection.detectPrivateKeyType(from: keyString)
+            privateKey = data
+            privateKeyName = url.lastPathComponent
+            testMessage = "Private key imported. Test the connection before saving."
+        } catch {
+            testMessage = error.localizedDescription
         }
     }
 

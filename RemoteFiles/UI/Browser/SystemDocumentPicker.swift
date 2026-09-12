@@ -6,6 +6,7 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
     enum Mode {
         case files
         case folder
+        case privateKey
 
         var contentTypes: [UTType] {
             switch self {
@@ -13,14 +14,27 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
                 return [.item]
             case .folder:
                 return [.folder]
+            case .privateKey:
+                // OpenSSH private keys are commonly extensionless, .pem, or arbitrary
+                // text/data files. `.item` keeps extensionless keys selectable.
+                return [.item]
             }
         }
 
         var asCopy: Bool {
             switch self {
-            case .files:
+            case .files, .privateKey:
                 return true
             case .folder:
+                return false
+            }
+        }
+
+        var allowsMultipleSelection: Bool {
+            switch self {
+            case .files, .folder:
+                return true
+            case .privateKey:
                 return false
             }
         }
@@ -40,7 +54,7 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
             asCopy: mode.asCopy
         )
         picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = true
+        picker.allowsMultipleSelection = mode.allowsMultipleSelection
         picker.shouldShowFileExtensions = true
         return picker
     }
