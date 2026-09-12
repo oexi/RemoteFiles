@@ -1,7 +1,7 @@
 import FilesProvider
 import Foundation
 
-final class FTPProvider: RemoteFileProvider, @unchecked Sendable {
+final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
     let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .copy, .resume])
 
@@ -102,6 +102,15 @@ final class FTPProvider: RemoteFileProvider, @unchecked Sendable {
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
         try await bridge { completion in
             _ = provider.copyItem(localFile: localURL, to: ftpPath(path), overwrite: overwrite, completionHandler: completion)
+        }
+    }
+
+    func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            _ = provider.contents(path: ftpPath(path), offset: Int64(clamping: offset), length: length) { data, error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: data ?? Data()) }
+            }
         }
     }
 

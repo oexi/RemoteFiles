@@ -6,6 +6,11 @@ struct BrowserView: View {
     @State private var showingFolderPrompt = false
     @State private var newFolderName = ""
     @State private var showingImporter = false
+    @State private var showingFolderImporter = false
+    @State private var searchText = ""
+    @State private var renameItem: RemoteItem?
+    @State private var renameText = ""
+    @State private var displayLimit = 200
 
     init(profile: ConnectionProfile) {
         _model = StateObject(wrappedValue: BrowserViewModel(profile: profile))
@@ -16,7 +21,7 @@ struct BrowserView: View {
             if model.loading && model.items.isEmpty {
                 HStack { Spacer(); ProgressView(); Spacer() }
             }
-            ForEach(model.items) { item in
+            ForEach(visibleItems) { item in
                 itemRow(item)
                     .swipeActions(edge: .trailing) {
                         if model.capabilities.contains(.delete) {
@@ -24,7 +29,27 @@ struct BrowserView: View {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
+                        if model.capabilities.contains(.move) {
+                            Button {
+                                renameItem = item
+                                renameText = item.name
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
+                            }
+                            .tint(.blue)
+                        }
                     }
+            }
+            if filteredItems.count > displayLimit {
+                Button {
+                    displayLimit += 200
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text("Load \(min(200, filteredItems.count - displayLimit)) more")
+                        Spacer()
+                    }
+                }
             }
         }
         .overlay {
@@ -56,11 +81,15 @@ struct BrowserView: View {
                     }
                     if model.capabilities.contains(.write) {
                         Button("Upload Files", systemImage: "square.and.arrow.up") { showingImporter = true }
+                        Button("Upload Folder", systemImage: "folder.badge.plus") { showingFolderImporter = true }
                     }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
         }
         .refreshable { await model.refresh() }
+        .searchable(text: $searchText, prompt: "Search this folder")
+        .onChange(of: searchText) { _, _ in displayLimit = 200 }
+        .onChange(of: model.currentPath) { _, _ in displayLimit = 200 }
         .task { await model.start() }
         .alert("New Folder", isPresented: $showingFolderPrompt) {
             TextField("Folder name", text: $newFolderName)
@@ -80,31 +109,71 @@ struct BrowserView: View {
             case .failure(let error): model.errorMessage = error.localizedDescription
             }
         }
+        .fileImporter(isPresented: $showingFolderImporter, allowedContentTypes: [.folder], allowsMultipleSelection: true) { result in
+            switch result {
+            case .success(let urls): Task { await model.upload(localURLs: urls) }
+            case .failure(let error): model.errorMessage = error.localizedDescription
+            }
+        }
+        .alert("Rename", isPresented: Binding(
+            get: { renameItem != nil },
+            set: { if !$0 { renameItem = nil } }
+        )) {
+            TextField("Name", text: $renameText)
+            Button("Cancel", role: .cancel) { renameItem = nil }
+            Button("Rename") {
+                guard let item = renameItem else { return }
+                let name = renameText
+                renameItem = nil
+                Task { await model.rename(item, to: name) }
+            }
+        }
+    }
+
+    private var filteredItems: [RemoteItem] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.items }
+        return model.items.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var visibleItems: ArraySlice<RemoteItem> {
+        filteredItems.prefix(displayLimit)
     }
 
     @ViewBuilder
     private func itemRow(_ item: RemoteItem) -> some View {
         if item.isDirectory {
-            Button { Task { await model.enter(item) } } label: { FileRow(item: item) }
+            Button { Task { await model.enter(item) } } label: { FileRow(item: item, provider: model.provider) }
                 .buttonStyle(.plain)
         } else if let provider = model.provider {
             NavigationLink {
                 FileDetailView(provider: provider, item: item)
-            } label: { FileRow(item: item) }
+            } label: { FileRow(item: item, provider: provider) }
         } else {
-            FileRow(item: item)
+            FileRow(item: item, provider: nil)
         }
     }
 }
 
 private struct FileRow: View {
     let item: RemoteItem
+    let provider: (any RemoteFileProvider)?
+    @State private var thumbnail: UIImage?
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: item.isDirectory ? "folder.fill" : iconName)
-                .font(.title3)
-                .frame(width: 28)
+            Group {
+                if let thumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                } else {
+                    Image(systemName: item.isDirectory ? "folder.fill" : iconName)
+                        .font(.title3)
+                }
+            }
+            .frame(width: 36, height: 36)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name).lineLimit(1)
                 HStack(spacing: 8) {
@@ -120,11 +189,19 @@ private struct FileRow: View {
             }
         }
         .contentShape(Rectangle())
+        .task(id: item.id) {
+            guard let provider, ThumbnailStore.shared.canThumbnail(item) else { return }
+            thumbnail = await ThumbnailStore.shared.thumbnail(
+                provider: provider,
+                item: item,
+                size: CGSize(width: 72, height: 72)
+            )
+        }
     }
 
     private var iconName: String {
         let ext = (item.name as NSString).pathExtension.lowercased()
-        if ext == "zip" { return "archivebox.fill" }
+        if ArchiveManager.canOpen(fileName: item.name) { return "archivebox.fill" }
         if EditorLanguage.isEditable(fileName: item.name) { return "doc.text.fill" }
         if ["jpg", "jpeg", "png", "gif", "heic", "webp"].contains(ext) { return "photo.fill" }
         if ["mp4", "mov", "m4v", "mkv"].contains(ext) { return "film.fill" }

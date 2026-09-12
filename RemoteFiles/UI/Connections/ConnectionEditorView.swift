@@ -10,6 +10,7 @@ struct ConnectionEditorView: View {
     @State private var privateKeyName: String?
     @State private var privateKeyPassphrase: String
     @State private var showingPrivateKeyImporter = false
+    @State private var showingDiagnostics = false
     @State private var testing = false
     @State private var testMessage: String?
 
@@ -106,6 +107,10 @@ struct ConnectionEditorView: View {
                 Section {
                     Button(testing ? "Testing…" : "Test Connection") { Task { await testConnection() } }
                         .disabled(testing || profile.host.isEmpty)
+                    Button("Run Diagnostics", systemImage: "stethoscope") {
+                        showingDiagnostics = true
+                    }
+                    .disabled(profile.host.isEmpty)
                     if let testMessage { Text(testMessage).font(.footnote) }
                 }
             }
@@ -154,6 +159,18 @@ struct ConnectionEditorView: View {
                 } catch {
                     testMessage = error.localizedDescription
                 }
+            }
+            .sheet(isPresented: $showingDiagnostics) {
+                ConnectionDiagnosticView(
+                    profile: profile,
+                    credential: Credential(
+                        username: profile.username,
+                        password: password,
+                        privateKey: privateKey,
+                        privateKeyName: privateKeyName,
+                        privateKeyPassphrase: privateKeyPassphrase.isEmpty ? nil : privateKeyPassphrase
+                    )
+                )
             }
         }
     }

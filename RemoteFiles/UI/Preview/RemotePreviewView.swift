@@ -19,6 +19,15 @@ struct RemotePreviewView: View {
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let localURL {
+                ToolbarItem(placement: .primaryAction) {
+                    ShareLink(item: localURL) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                }
+            }
+        }
         .task {
             do {
                 localURL = try await CacheManager.shared.materialize(provider: provider, item: item)

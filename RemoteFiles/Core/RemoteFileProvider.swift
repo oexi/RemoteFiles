@@ -35,6 +35,20 @@ protocol RemoteFileProvider: Sendable {
     func move(from: String, to: String, overwrite: Bool) async throws
 }
 
+protocol RemoteChunkReadableProvider: Sendable {
+    func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data
+}
+
+protocol RemoteChunkWritableProvider: Sendable {
+    func prepareChunkedUpload(path: String, overwrite: Bool) async throws
+    func writeChunk(path: String, data: Data, offset: UInt64) async throws
+    func finishChunkedUpload(path: String) async throws
+}
+
+extension RemoteChunkWritableProvider {
+    func finishChunkedUpload(path: String) async throws { }
+}
+
 extension RemoteFileProvider {
     func disconnect() async { }
 

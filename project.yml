@@ -46,6 +46,12 @@ packages:
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation.git
     revision: d17566fdcb293c2d2304c6b445dd729dd66d470e
+  SWCompression:
+    url: https://github.com/tsolomko/SWCompression.git
+    revision: 36f068e4ffa929f23aec8dde065a9b365fbf0688
+  LibArchive:
+    url: https://github.com/everpcpc/libarchive-swift.git
+    revision: 69a947c0e5bf4e940a6ac998a8fab3165d5b97f6
   TreeSitterLanguages:
     url: https://github.com/simonbs/TreeSitterLanguages.git
     revision: 15cf3a9ec3ab95e0d058b7df9f35619123c9e02d
@@ -72,6 +78,8 @@ targets:
       - package: SwiftNIO
         product: NIOCore
       - package: ZIPFoundation
+      - package: SWCompression
+      - package: LibArchive
       - package: TreeSitterLanguages
         product: TreeSitterBashRunestone
       - package: TreeSitterLanguages

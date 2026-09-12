@@ -1,7 +1,7 @@
 import Foundation
 import NFSKit
 
-final class NFSProvider: RemoteFileProvider, @unchecked Sendable {
+final class NFSProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
     let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .permissions, .symbolicLinks])
     let client: NFSClient
@@ -59,6 +59,14 @@ final class NFSProvider: RemoteFileProvider, @unchecked Sendable {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+    }
+
+    func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
+        try await ensureConnected()
+        let lower = Int64(clamping: offset)
+        let upper = lower.addingReportingOverflow(Int64(length))
+        let end = upper.overflow ? Int64.max : upper.partialValue
+        return try await client.contents(atPath: nfsPath(path), range: lower..<end, progress: nil).get()
     }
 
     func ensureConnected() async throws {

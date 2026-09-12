@@ -3,7 +3,7 @@ import Crypto
 import Foundation
 import NIOCore
 
-final class SFTPProvider: RemoteFileProvider, @unchecked Sendable {
+final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, RemoteChunkWritableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
     let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .permissions, .symbolicLinks])
 
@@ -112,6 +112,29 @@ final class SFTPProvider: RemoteFileProvider, @unchecked Sendable {
                 try await file.write(buffer, at: offset)
                 offset += UInt64(data.count)
             }
+        }
+    }
+
+    func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
+        let sftp = try await client()
+        return try await sftp.withFile(filePath: RemotePath.normalize(path), flags: .read) { file in
+            let buffer = try await file.read(from: offset, length: UInt32(clamping: length))
+            return Data(buffer.readableBytesView)
+        }
+    }
+
+    func prepareChunkedUpload(path: String, overwrite: Bool) async throws {
+        let sftp = try await client()
+        let flags: SFTPOpenFileFlags = overwrite ? [.write, .create, .truncate] : [.write, .create, .forceCreate]
+        try await sftp.withFile(filePath: RemotePath.normalize(path), flags: flags) { _ in }
+    }
+
+    func writeChunk(path: String, data: Data, offset: UInt64) async throws {
+        let sftp = try await client()
+        try await sftp.withFile(filePath: RemotePath.normalize(path), flags: .write) { file in
+            var buffer = ByteBufferAllocator().buffer(capacity: data.count)
+            buffer.writeBytes(data)
+            try await file.write(buffer, at: offset)
         }
     }
 

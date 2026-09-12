@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TransferListView: View {
     @EnvironmentObject private var engine: TransferEngine
+    @EnvironmentObject private var connections: ConnectionStore
 
     var body: some View {
         NavigationStack {
@@ -23,6 +24,18 @@ struct TransferListView: View {
                     }
                 }
                 .padding(.vertical, 4)
+                .swipeActions(edge: .trailing) {
+                    if record.state == .running || record.state == .queued {
+                        Button(role: .destructive) { engine.cancel(record) } label: {
+                            Label("Cancel", systemImage: "xmark")
+                        }
+                    } else if record.state == .failed || record.state == .cancelled {
+                        Button { engine.retry(record, using: connections) } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                        .tint(.blue)
+                    }
+                }
             }
             .overlay {
                 if engine.records.isEmpty {

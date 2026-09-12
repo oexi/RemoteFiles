@@ -4,6 +4,16 @@ import Combine
 @MainActor
 final class TransferEngine: ObservableObject {
     @Published private(set) var records: [TransferRecord] = []
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+    private let fileURL: URL
+
+    init() {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let directory = base.appendingPathComponent("RemoteFiles", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        fileURL = directory.appendingPathComponent("transfers.json")
+        load()
+    }
 
     func copyFile(
         item: RemoteItem,
@@ -14,36 +24,206 @@ final class TransferEngine: ObservableObject {
     ) {
         let record = TransferRecord(
             fileName: item.name,
+            sourceProfileID: source.profile.id,
+            sourcePath: item.path,
+            destinationProfileID: destination.profile.id,
+            destinationPath: destinationPath,
+            overwrite: overwrite,
             source: "\(source.profile.name):\(item.path)",
             destination: "\(destination.profile.name):\(destinationPath)"
         )
         records.insert(record, at: 0)
-        let id = record.id
+        persist()
+        start(record: record, item: item, source: source, destination: destination, disconnectSource: false)
+    }
 
-        Task {
-            update(id) { $0.state = .running; $0.progress = 0.05 }
+    func resumePending(using connections: ConnectionStore) {
+        for record in records where record.state == .queued {
+            startPersisted(record, using: connections)
+        }
+    }
+
+    func retry(_ record: TransferRecord, using connections: ConnectionStore) {
+        guard record.state == .failed || record.state == .cancelled else { return }
+        update(record.id) {
+            $0.state = .queued
+            $0.progress = 0
+            $0.errorMessage = nil
+        }
+        startPersisted(recordWithID: record.id, using: connections)
+    }
+
+    func cancel(_ record: TransferRecord) {
+        tasks[record.id]?.cancel()
+        tasks[record.id] = nil
+        update(record.id) {
+            $0.state = .cancelled
+            $0.errorMessage = nil
+        }
+    }
+
+    private func startPersisted(_ original: TransferRecord, using connections: ConnectionStore) {
+        startPersisted(recordWithID: original.id, using: connections)
+    }
+
+    private func startPersisted(recordWithID id: UUID, using connections: ConnectionStore) {
+        guard tasks[id] == nil,
+              let record = records.first(where: { $0.id == id }),
+              let sourceProfile = connections.profiles.first(where: { $0.id == record.sourceProfileID }),
+              let destinationProfile = connections.profiles.first(where: { $0.id == record.destinationProfileID }) else {
+            if records.contains(where: { $0.id == id }) {
+                update(id) {
+                    $0.state = .failed
+                    $0.errorMessage = "The source or destination connection no longer exists."
+                }
+            }
+            return
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
             do {
+                let source = try ProviderFactory.make(for: sourceProfile)
+                let destination = try ProviderFactory.make(for: destinationProfile)
+                try await source.connect()
+                let item = try await source.attributes(path: record.sourcePath)
+                await self.perform(
+                    recordID: id,
+                    item: item,
+                    source: source,
+                    destination: destination,
+                    destinationPath: record.destinationPath,
+                    disconnectSource: true
+                )
+            } catch is CancellationError {
+                self.update(id) { $0.state = .cancelled }
+            } catch {
+                self.update(id) { $0.state = .failed; $0.errorMessage = error.localizedDescription }
+            }
+            self.tasks[id] = nil
+        }
+        tasks[id] = task
+    }
+
+    private func start(
+        record: TransferRecord,
+        item: RemoteItem,
+        source: any RemoteFileProvider,
+        destination: any RemoteFileProvider,
+        disconnectSource: Bool
+    ) {
+        let id = record.id
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.perform(
+                recordID: id,
+                item: item,
+                source: source,
+                destination: destination,
+                destinationPath: record.destinationPath,
+                disconnectSource: disconnectSource
+            )
+            self.tasks[id] = nil
+        }
+        tasks[id] = task
+    }
+
+    private func perform(
+        recordID id: UUID,
+        item: RemoteItem,
+        source: any RemoteFileProvider,
+        destination: any RemoteFileProvider,
+        destinationPath: String,
+        disconnectSource: Bool
+    ) async {
+        do {
+            update(id) { $0.state = .running; $0.progress = 0.05 }
+            try Task.checkCancellation()
+            let overwrite = records.first(where: { $0.id == id })?.overwrite ?? false
+            if let reader = source as? any RemoteChunkReadableProvider,
+               let writer = destination as? any RemoteChunkWritableProvider,
+               let total = item.size, total >= 0 {
+                try await streamCopy(
+                    item: item,
+                    totalBytes: UInt64(total),
+                    reader: reader,
+                    writer: writer,
+                    destinationPath: destinationPath,
+                    overwrite: overwrite,
+                    recordID: id
+                )
+            } else {
                 let tempURL = try await CacheManager.shared.temporaryURL(fileName: item.name)
                 defer { try? FileManager.default.removeItem(at: tempURL) }
                 try await source.download(path: item.path, to: tempURL)
+                try Task.checkCancellation()
                 update(id) { $0.progress = 0.55 }
                 try await destination.upload(from: tempURL, to: destinationPath, overwrite: overwrite)
-                await destination.disconnect()
-                update(id) { $0.state = .completed; $0.progress = 1 }
-            } catch {
-                await destination.disconnect()
-                update(id) { $0.state = .failed; $0.errorMessage = error.localizedDescription }
             }
+            try Task.checkCancellation()
+            update(id) { $0.state = .completed; $0.progress = 1; $0.errorMessage = nil }
+        } catch is CancellationError {
+            update(id) { $0.state = .cancelled; $0.errorMessage = nil }
+        } catch {
+            update(id) { $0.state = .failed; $0.errorMessage = error.localizedDescription }
         }
+        await destination.disconnect()
+        if disconnectSource { await source.disconnect() }
+    }
+
+    private func streamCopy(
+        item: RemoteItem,
+        totalBytes: UInt64,
+        reader: any RemoteChunkReadableProvider,
+        writer: any RemoteChunkWritableProvider,
+        destinationPath: String,
+        overwrite: Bool,
+        recordID: UUID
+    ) async throws {
+        try await writer.prepareChunkedUpload(path: destinationPath, overwrite: overwrite)
+        let chunkSize = 1024 * 1024
+        var offset: UInt64 = 0
+        while offset < totalBytes {
+            try Task.checkCancellation()
+            let remaining = totalBytes - offset
+            let length = Int(min(UInt64(chunkSize), remaining))
+            let data = try await reader.readChunk(path: item.path, offset: offset, length: length)
+            guard !data.isEmpty else {
+                throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
+            }
+            try await writer.writeChunk(path: destinationPath, data: data, offset: offset)
+            offset += UInt64(data.count)
+            let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
+            update(recordID) { $0.progress = 0.05 + 0.9 * min(1, fraction) }
+        }
+        try await writer.finishChunkedUpload(path: destinationPath)
     }
 
     func clearFinished() {
         records.removeAll { $0.state == .completed || $0.state == .cancelled }
+        persist()
     }
 
     private func update(_ id: UUID, _ mutation: (inout TransferRecord) -> Void) {
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         mutation(&records[index])
+        persist()
+    }
+
+    private func load() {
+        guard let data = try? Data(contentsOf: fileURL),
+              var decoded = try? JSONDecoder().decode([TransferRecord].self, from: data) else { return }
+        for index in decoded.indices where decoded[index].state == .running {
+            decoded[index].state = .queued
+            decoded[index].progress = 0
+            decoded[index].errorMessage = nil
+        }
+        records = decoded
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        try? data.write(to: fileURL, options: .atomic)
     }
 }
 

@@ -48,7 +48,7 @@ struct ArchiveDetailView: View {
     private func load() async {
         do {
             let localURL = try await CacheManager.shared.materialize(provider: provider, item: item)
-            entries = try ArchiveManager.list(localURL)
+            entries = try ArchiveManager.list(localURL, originalName: item.name)
         } catch {
             message = error.localizedDescription
         }

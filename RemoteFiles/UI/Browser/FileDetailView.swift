@@ -3,25 +3,36 @@ import SwiftUI
 struct FileDetailView: View {
     @EnvironmentObject private var connections: ConnectionStore
     @EnvironmentObject private var transfers: TransferEngine
+    @EnvironmentObject private var offline: OfflineStore
 
     let provider: any RemoteFileProvider
     let item: RemoteItem
 
     @State private var showingDestinations = false
     @State private var copyError: String?
+    @State private var offlineWorking = false
 
     var body: some View {
         let ext = (item.name as NSString).pathExtension.lowercased()
         Group {
             if EditorLanguage.isEditable(fileName: item.name) {
                 RemoteEditorView(provider: provider, item: item)
-            } else if ext == "zip" {
+            } else if ArchiveManager.canOpen(fileName: item.name) {
                 ArchiveDetailView(provider: provider, item: item)
             } else {
                 RemotePreviewView(provider: provider, item: item)
             }
         }
         .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Button(
+                    offline.isPinned(profileID: provider.profile.id, path: item.path) ? "Remove Offline Copy" : "Keep Offline",
+                    systemImage: offline.isPinned(profileID: provider.profile.id, path: item.path) ? "checkmark.circle.fill" : "arrow.down.circle"
+                ) {
+                    Task { await toggleOffline() }
+                }
+                .disabled(offlineWorking)
+            }
             ToolbarItem(placement: .secondaryAction) {
                 Button("Copy to Server", systemImage: "arrow.right.doc.on.clipboard") {
                     showingDestinations = true
@@ -51,6 +62,20 @@ struct FileDetailView: View {
             Button("OK") { copyError = nil }
         } message: {
             Text(copyError ?? "Unknown error")
+        }
+    }
+
+    private func toggleOffline() async {
+        offlineWorking = true
+        defer { offlineWorking = false }
+        if offline.isPinned(profileID: provider.profile.id, path: item.path) {
+            offline.unpin(profileID: provider.profile.id, path: item.path)
+            return
+        }
+        do {
+            try await offline.pin(provider: provider, item: item)
+        } catch {
+            copyError = error.localizedDescription
         }
     }
 }

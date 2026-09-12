@@ -1,7 +1,7 @@
 import Foundation
 import SMBClient
 
-final class SMBProvider: RemoteFileProvider, @unchecked Sendable {
+final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
     let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume])
 
@@ -84,6 +84,19 @@ final class SMBProvider: RemoteFileProvider, @unchecked Sendable {
             throw RemoteProviderError.conflict("A file already exists at \(path).")
         }
         try await client.upload(localPath: localURL, remotePath: smbPath(path))
+    }
+
+    func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
+        try await ensureConnected()
+        let reader = client.fileReader(path: smbPath(path))
+        do {
+            let data = try await reader.read(offset: offset, length: UInt32(clamping: length))
+            try await reader.close()
+            return data
+        } catch {
+            try? await reader.close()
+            throw error
+        }
     }
 
     func createDirectory(path: String) async throws {

@@ -3,13 +3,13 @@ import Foundation
 enum RemoteArchiveService {
     static func extractHere(item: RemoteItem, provider: any RemoteFileProvider) async throws {
         let archiveURL = try await CacheManager.shared.materialize(provider: provider, item: item, forceRefresh: true)
-        guard ArchiveManager.canOpen(archiveURL) else {
-            throw RemoteProviderError.unsupported("Only ZIP archives are enabled in the first implementation. libarchive integration will add 7z/RAR/tar formats.")
+        guard ArchiveManager.canOpen(fileName: item.name) else {
+            throw RemoteProviderError.unsupported("This archive format is not supported.")
         }
 
         let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("RemoteFiles-Extract-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempRoot) }
-        try ArchiveManager.extract(archiveURL, to: tempRoot)
+        try ArchiveManager.extract(archiveURL, originalName: item.name, to: tempRoot)
 
         let destinationRoot = RemotePath.parent(item.path)
         let (directories, files) = try extractedItems(under: tempRoot)

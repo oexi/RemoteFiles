@@ -68,13 +68,27 @@ final class BrowserViewModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    func rename(_ item: RemoteItem, to newName: String) async {
+        guard let provider else { return }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != item.name, !trimmed.contains("/") else { return }
+        do {
+            try await provider.move(
+                from: item.path,
+                to: RemotePath.join(RemotePath.parent(item.path), trimmed),
+                overwrite: false
+            )
+            await refresh()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
     func upload(localURLs: [URL]) async {
         guard let provider else { return }
         do {
             for url in localURLs {
                 let access = url.startAccessingSecurityScopedResource()
                 defer { if access { url.stopAccessingSecurityScopedResource() } }
-                try await provider.upload(from: url, to: RemotePath.join(currentPath, url.lastPathComponent), overwrite: false)
+                try await uploadRecursively(localURL: url, remoteParent: currentPath, provider: provider)
             }
             await refresh()
         } catch { errorMessage = error.localizedDescription }
@@ -87,6 +101,34 @@ final class BrowserViewModel: ObservableObject {
     private func refreshImpl() async throws {
         guard let provider else { throw RemoteProviderError.notConnected }
         items = try await provider.list(path: currentPath)
+    }
+
+    private func uploadRecursively(
+        localURL: URL,
+        remoteParent: String,
+        provider: any RemoteFileProvider
+    ) async throws {
+        let values = try localURL.resourceValues(forKeys: [.isDirectoryKey])
+        let remotePath = RemotePath.join(remoteParent, localURL.lastPathComponent)
+        if values.isDirectory == true {
+            do {
+                try await provider.createDirectory(path: remotePath)
+            } catch {
+                let existing = try? await provider.attributes(path: remotePath)
+                guard existing?.isDirectory == true else { throw error }
+            }
+            let children = try FileManager.default.contentsOfDirectory(
+                at: localURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            for child in children {
+                try Task.checkCancellation()
+                try await uploadRecursively(localURL: child, remoteParent: remotePath, provider: provider)
+            }
+        } else {
+            try await provider.upload(from: localURL, to: remotePath, overwrite: false)
+        }
     }
 }
 
