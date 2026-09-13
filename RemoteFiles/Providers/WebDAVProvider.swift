@@ -7,17 +7,21 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
     private let credential: Credential?
     private let session: URLSession
 
-    init(profile: ConnectionProfile, credential: Credential?) {
+    init(profile: ConnectionProfile, credential: Credential?, session: URLSession? = nil) {
         self.profile = profile
         self.credential = credential
-        let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 60
-        configuration.timeoutIntervalForResource = 1800
-        configuration.waitsForConnectivity = true
-        session = URLSession(configuration: configuration)
+        if let session {
+            self.session = session
+        } else {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = 60
+            configuration.timeoutIntervalForResource = 1800
+            configuration.waitsForConnectivity = true
+            self.session = URLSession(configuration: configuration)
+        }
     }
 
-    func connect() async throws { _ = try await list(path: "/") }
+    func connect() async throws { _ = try await list(path: profile.initialPath) }
     func disconnect() async { session.invalidateAndCancel() }
 
     func list(path: String) async throws -> [RemoteItem] {
@@ -212,4 +216,3 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
     <d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:resourcetype/><d:getcontentlength/><d:getlastmodified/><d:creationdate/><d:getetag/><d:getcontenttype/></d:prop></d:propfind>
     """
 }
-
