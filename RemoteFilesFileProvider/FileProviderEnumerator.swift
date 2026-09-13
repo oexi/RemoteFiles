@@ -27,7 +27,8 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 try await provider.connect()
                 defer { Task { await provider.disconnect() } }
                 let path = try codec.path(for: containerIdentifier)
-                let remoteItems = try await provider.list(path: path)
+                let listedItems = try await provider.list(path: path)
+                let remoteItems = listedItems.filter { codec.containsDirectChild($0.path, of: path) }
                 let items = remoteItems.map { FileProviderItem(remote: $0, codec: codec, providerCapabilities: provider.capabilities) }
                 _ = try await FileProviderSnapshotStore.shared.save(
                     profileID: profile.id,
@@ -77,7 +78,8 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 defer { Task { await provider.disconnect() } }
 
                 let path = try codec.path(for: containerIdentifier)
-                let remoteItems = try await provider.list(path: path)
+                let listedItems = try await provider.list(path: path)
+                let remoteItems = listedItems.filter { codec.containsDirectChild($0.path, of: path) }
                 let currentFingerprints = FileProviderSnapshotStore.fingerprints(for: remoteItems)
 
                 let changedRemote = remoteItems.filter { item in
@@ -97,6 +99,8 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                     }
                 }
 
+                // Keep old out-of-root keys here so a snapshot created before the
+                // boundary fix can still remove stale items from the Files UI.
                 let deleted = previous.fingerprints.keys
                     .filter { currentFingerprints[$0] == nil }
                     .map(codec.identifier(for:))

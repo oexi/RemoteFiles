@@ -33,7 +33,7 @@ struct ArchiveDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button(extracting ? "Extracting…" : "Extract Here") {
+                Button(extractionActionTitle) {
                     Task { await extract() }
                 }
                 .disabled(extracting || loading)
@@ -43,6 +43,10 @@ struct ArchiveDetailView: View {
         .alert("Archive", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK") { message = nil }
         } message: { Text(message ?? "") }
+    }
+
+    private var extractionActionTitle: LocalizedStringKey {
+        extracting ? "Extracting…" : "Extract Here"
     }
 
     private func load() async {
@@ -66,4 +70,3 @@ struct ArchiveDetailView: View {
         }
     }
 }
-

@@ -271,13 +271,17 @@ private struct OfflineArchiveContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button(working ? "Extracting…" : "Extract to Offline", systemImage: "archivebox") {
+                Button(extractionActionTitle, systemImage: "archivebox") {
                     Task { await extract() }
                 }
                 .disabled(loading || working)
             }
         }
         .task { await load() }
+    }
+
+    private var extractionActionTitle: LocalizedStringKey {
+        working ? "Extracting…" : "Extract to Offline"
     }
 
     private func load() async {

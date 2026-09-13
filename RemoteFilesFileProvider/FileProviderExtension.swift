@@ -114,7 +114,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let provider = try await connectedProvider()
                 defer { Task { await provider.disconnect() } }
                 let parentPath = try codec.path(for: itemTemplate.parentItemIdentifier)
-                let path = RemotePath.join(parentPath, itemTemplate.filename)
+                let path = try codec.childPath(parent: parentPath, filename: itemTemplate.filename)
                 if itemTemplate.contentType?.conforms(to: .folder) == true {
                     try await provider.createDirectory(path: path)
                 } else if let url {
@@ -160,7 +160,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     throw NSFileProviderError(.cannotSynchronize)
                 }
                 let desiredParent = try codec.path(for: item.parentItemIdentifier)
-                let desiredPath = RemotePath.join(desiredParent, item.filename)
+                let desiredPath = try codec.childPath(parent: desiredParent, filename: item.filename)
                 if changedFields.contains(.filename) || changedFields.contains(.parentItemIdentifier),
                    desiredPath != path {
                     try await provider.move(from: path, to: desiredPath, overwrite: false)

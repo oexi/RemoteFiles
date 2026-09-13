@@ -27,7 +27,34 @@ struct FileProviderPathCodec {
         guard let data = Data(base64Encoded: encoded), let value = String(data: data, encoding: .utf8) else {
             throw RemoteProviderError.invalidResponse("Invalid File Provider item identifier.")
         }
-        return RemotePath.normalize(value)
+        guard let path = RemotePath.confined(value, to: rootPath) else {
+            throw RemoteProviderError.invalidResponse("File Provider item path is outside the configured root.")
+        }
+        return path
+    }
+
+    func childPath(parent: String, filename: String) throws -> String {
+        guard !filename.isEmpty,
+              filename != ".",
+              filename != "..",
+              !filename.contains("/"),
+              !filename.unicodeScalars.contains(where: { $0.value == 0 }) else {
+            throw RemoteProviderError.invalidResponse("Invalid File Provider item filename.")
+        }
+        let path = RemotePath.join(parent, filename)
+        guard let confined = RemotePath.confined(path, to: rootPath),
+              confined != RemotePath.normalize(parent) else {
+            throw RemoteProviderError.invalidResponse("File Provider item path is outside the configured root.")
+        }
+        return confined
+    }
+
+    func contains(_ path: String) -> Bool {
+        RemotePath.confined(path, to: rootPath) != nil
+    }
+
+    func containsDirectChild(_ path: String, of containerPath: String) -> Bool {
+        contains(containerPath) && RemotePath.isDirectChild(path, of: containerPath)
     }
 
     func parentIdentifier(for path: String) -> NSFileProviderItemIdentifier {

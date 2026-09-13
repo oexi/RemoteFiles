@@ -35,6 +35,7 @@
 "Inherited" = "已繼承";
 "Item" = "項目";
 "Keep remote files or folders offline to access them without a server connection." = "將遠端檔案或資料夾保留離線，不連線伺服器也能存取。";
+"Keep Offline" = "保留離線";
 "Language" = "語言";
 "Light" = "淺色";
 "Modified" = "修改時間";
@@ -59,6 +60,7 @@
 "Protocols" = "通訊協定";
 "Refresh" = "重新整理";
 "Remove" = "移除";
+"Remove Offline Copy" = "移除離線副本";
 "Remove Private Key" = "移除私鑰";
 "Rename" = "重新命名";
 "Replace Private Key" = "取代私鑰";
@@ -93,6 +95,7 @@
 "Loading folder…" = "正在載入資料夾…";
 "Reading folder…" = "正在讀取資料夾…";
 "Reading archive…" = "正在讀取壓縮檔…";
+"Extract Here" = "在此解壓縮";
 "Extract to Offline" = "解壓縮到離線";
 "Extracting…" = "正在解壓縮…";
 "Search this folder" = "搜尋此資料夾";
