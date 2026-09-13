@@ -448,7 +448,7 @@ struct BrowserView: View {
 
         if let provider = model.provider {
             Button(
-                offline.isPinned(profileID: provider.profile.id, path: item.path) ? "Remove Offline Copy" : "Keep Offline",
+                offlineActionTitle(for: item, provider: provider),
                 systemImage: offline.isPinned(profileID: provider.profile.id, path: item.path) ? "checkmark.circle.fill" : "arrow.down.circle"
             ) {
                 Task { await toggleOffline(item, provider: provider) }
@@ -491,6 +491,10 @@ struct BrowserView: View {
                 }
             }
         }
+    }
+
+    private func offlineActionTitle(for item: RemoteItem, provider: any RemoteFileProvider) -> LocalizedStringKey {
+        offline.isPinned(profileID: provider.profile.id, path: item.path) ? "Remove Offline Copy" : "Keep Offline"
     }
 
     private func toggleOffline(_ item: RemoteItem, provider: any RemoteFileProvider) async {
@@ -685,4 +689,3 @@ private struct RemoteItemPropertiesView: View {
     }
 
 }
-

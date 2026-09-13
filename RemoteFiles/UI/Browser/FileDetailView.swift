@@ -27,7 +27,7 @@ struct FileDetailView: View {
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
                 Button(
-                    offline.isPinned(profileID: provider.profile.id, path: item.path) ? "Remove Offline Copy" : "Keep Offline",
+                    offlineActionTitle,
                     systemImage: offline.isPinned(profileID: provider.profile.id, path: item.path) ? "checkmark.circle.fill" : "arrow.down.circle"
                 ) {
                     Task { await toggleOffline() }
@@ -86,6 +86,10 @@ struct FileDetailView: View {
         }
     }
 
+    private var offlineActionTitle: LocalizedStringKey {
+        offline.isPinned(profileID: provider.profile.id, path: item.path) ? "Remove Offline Copy" : "Keep Offline"
+    }
+
     private func toggleOffline() async {
         offlineWorking = true
         defer { offlineWorking = false }
@@ -140,4 +144,3 @@ struct CopyDestinationView: View {
         }
     }
 }
-

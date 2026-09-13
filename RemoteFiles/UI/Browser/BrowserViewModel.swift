@@ -54,7 +54,11 @@ final class BrowserViewModel: ObservableObject {
     }
 
     func createFolder(name: String) async {
-        guard let provider, !name.isEmpty else { return }
+        guard let name = validatedName(name) else {
+            errorMessage = "The name must be a single path component and cannot be empty, '.', '..', contain '/', or contain a null character."
+            return
+        }
+        guard let provider else { return }
         do {
             try await provider.createDirectory(path: RemotePath.join(currentPath, name))
             await refresh()
@@ -88,13 +92,16 @@ final class BrowserViewModel: ObservableObject {
     }
 
     func rename(_ item: RemoteItem, to newName: String) async {
+        guard let name = validatedName(newName) else {
+            errorMessage = "The name must be a single path component and cannot be empty, '.', '..', contain '/', or contain a null character."
+            return
+        }
         guard let provider else { return }
-        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != item.name, !trimmed.contains("/") else { return }
+        guard name != item.name else { return }
         do {
             try await provider.move(
                 from: item.path,
-                to: RemotePath.join(RemotePath.parent(item.path), trimmed),
+                to: RemotePath.join(RemotePath.parent(item.path), name),
                 overwrite: false
             )
             await refresh()
@@ -214,6 +221,18 @@ final class BrowserViewModel: ObservableObject {
         items = try await provider.list(path: currentPath)
     }
 
+    private func validatedName(_ name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed != ".",
+              trimmed != "..",
+              !trimmed.contains("/"),
+              !trimmed.contains("\0") else {
+            return nil
+        }
+        return trimmed
+    }
+
     private func uploadRecursively(
         localURL: URL,
         remoteParent: String,
@@ -231,8 +250,7 @@ final class BrowserViewModel: ObservableObject {
             }
             let children = try FileManager.default.contentsOfDirectory(
                 at: localURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
+                includingPropertiesForKeys: [.isDirectoryKey]
             )
             for child in children {
                 try Task.checkCancellation()
@@ -282,4 +300,3 @@ final class BrowserViewModel: ObservableObject {
         return destination
     }
 }
-
