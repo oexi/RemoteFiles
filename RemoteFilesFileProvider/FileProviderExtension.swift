@@ -72,7 +72,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let initialItem = FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities)
                 if let requestedVersion,
                    !fileProviderContentVersionMatches(initialItem.itemVersion, requestedVersion) {
-                    throw NSFileProviderError(.versionNoLongerAvailable)
+                    throw NSFileProviderError(.cannotSynchronize)
                 }
                 let directory = try NSFileProviderManager(for: domain)?.temporaryDirectoryURL()
                     ?? FileManager.default.temporaryDirectory
@@ -154,7 +154,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 var path = try codec.path(for: item.itemIdentifier)
                 let currentRemote = try await provider.attributes(path: path)
                 let currentItem = FileProviderItem(remote: currentRemote, codec: codec, providerCapabilities: provider.capabilities)
-                if options.contains(.failOnConflict),
+                if #available(iOS 26.0, *),
+                   options.contains(.failOnConflict),
                    !fileProviderVersionMatches(currentItem.itemVersion, version) {
                     throw NSFileProviderError(.cannotSynchronize)
                 }
