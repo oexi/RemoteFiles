@@ -25,7 +25,11 @@ struct Credential: Sendable {
 
 final class CredentialVault: @unchecked Sendable {
     static let shared = CredentialVault()
-    private let service = "com.oexi.RemoteFiles.credentials"
+    private let service: String
+
+    init(service: String = "com.oexi.RemoteFiles.credentials") {
+        self.service = service
+    }
 
     func save(_ credential: Credential, for profileID: UUID) throws {
         let account = profileID.uuidString
@@ -41,12 +45,32 @@ final class CredentialVault: @unchecked Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
         ]
-        SecItemDelete(base as CFDictionary)
-        var query = base
-        query[kSecValueData as String] = payload
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw VaultError.status(status) }
+        let attributes: [String: Any] = [kSecValueData as String: payload]
+        let updateStatus = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return
+        }
+        guard updateStatus == errSecItemNotFound else {
+            throw VaultError.status(updateStatus)
+        }
+
+        var addQuery = base
+        addQuery[kSecValueData as String] = payload
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        if addStatus == errSecSuccess {
+            return
+        }
+
+        // Another save may have inserted the item after the update missed it.
+        // Update that item instead of treating the duplicate as a failed save.
+        guard addStatus == errSecDuplicateItem else {
+            throw VaultError.status(addStatus)
+        }
+        let retryStatus = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
+        guard retryStatus == errSecSuccess else {
+            throw VaultError.status(retryStatus)
+        }
     }
 
     func load(for profileID: UUID) throws -> Credential? {
@@ -97,4 +121,3 @@ final class CredentialVault: @unchecked Sendable {
         }
     }
 }
-
