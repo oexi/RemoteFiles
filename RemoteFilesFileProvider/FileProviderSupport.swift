@@ -93,3 +93,15 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 func fileProviderProgress() -> Progress {
     Progress(totalUnitCount: 100)
 }
+
+func fileProviderContentVersionMatches(_ lhs: NSFileProviderItemVersion, _ rhs: NSFileProviderItemVersion) -> Bool {
+    lhs.contentVersion == rhs.contentVersion
+}
+
+func fileProviderVersionMatches(_ lhs: NSFileProviderItemVersion, _ rhs: NSFileProviderItemVersion) -> Bool {
+    lhs.contentVersion == rhs.contentVersion && lhs.metadataVersion == rhs.metadataVersion
+}
+
+func bindCancellation(of progress: Progress, to task: Task<Void, Never>) {
+    progress.cancellationHandler = { task.cancel() }
+}

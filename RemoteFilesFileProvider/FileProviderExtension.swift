@@ -56,22 +56,47 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
         let progress = fileProviderProgress()
-        Task {
+        let task = Task {
+            var temporaryURL: URL?
+            var keepTemporaryURL = false
+            defer {
+                if !keepTemporaryURL, let temporaryURL {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                }
+            }
             do {
                 let provider = try await connectedProvider()
                 defer { Task { await provider.disconnect() } }
                 let path = try codec.path(for: itemIdentifier)
                 let remote = try await provider.attributes(path: path)
+                let initialItem = FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities)
+                if let requestedVersion,
+                   !fileProviderContentVersionMatches(initialItem.itemVersion, requestedVersion) {
+                    throw NSFileProviderError(.versionNoLongerAvailable)
+                }
                 let directory = try NSFileProviderManager(for: domain)?.temporaryDirectoryURL()
                     ?? FileManager.default.temporaryDirectory
                 let url = directory.appendingPathComponent("RemoteFiles-FP-\(UUID().uuidString)-\(remote.name)")
+                temporaryURL = url
                 try await provider.download(path: path, to: url)
+                try Task.checkCancellation()
+                let confirmedRemote = try await provider.attributes(path: path)
+                try Task.checkCancellation()
+                let confirmedItem = FileProviderItem(remote: confirmedRemote, codec: codec, providerCapabilities: provider.capabilities)
+                guard fileProviderContentVersionMatches(initialItem.itemVersion, confirmedItem.itemVersion) else {
+                    try? FileManager.default.removeItem(at: url)
+                    throw NSFileProviderError(.cannotSynchronize)
+                }
                 progress.completedUnitCount = 100
-                completionHandler(url, FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities), nil)
+                keepTemporaryURL = true
+                completionHandler(url, confirmedItem, nil)
+            } catch is CancellationError {
+                completionHandler(nil, nil, CocoaError(.userCancelled))
             } catch {
                 completionHandler(nil, nil, error)
             }
         }
+        bindCancellation(of: progress, to: task)
         return progress
     }
 
@@ -120,23 +145,32 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
         let progress = fileProviderProgress()
+        let appliedFields: NSFileProviderItemFields = [.filename, .parentItemIdentifier, .contents]
+        let pendingFields = changedFields.subtracting(appliedFields)
         Task {
             do {
                 let provider = try await connectedProvider()
                 defer { Task { await provider.disconnect() } }
                 var path = try codec.path(for: item.itemIdentifier)
+                let currentRemote = try await provider.attributes(path: path)
+                let currentItem = FileProviderItem(remote: currentRemote, codec: codec, providerCapabilities: provider.capabilities)
+                if options.contains(.failOnConflict),
+                   !fileProviderVersionMatches(currentItem.itemVersion, version) {
+                    throw NSFileProviderError(.cannotSynchronize)
+                }
                 let desiredParent = try codec.path(for: item.parentItemIdentifier)
                 let desiredPath = RemotePath.join(desiredParent, item.filename)
-                if desiredPath != path {
+                if changedFields.contains(.filename) || changedFields.contains(.parentItemIdentifier),
+                   desiredPath != path {
                     try await provider.move(from: path, to: desiredPath, overwrite: false)
                     path = desiredPath
                 }
-                if let newContents {
+                if changedFields.contains(.contents), let newContents {
                     try await provider.upload(from: newContents, to: path, overwrite: true)
                 }
                 let remote = try await provider.attributes(path: path)
                 progress.completedUnitCount = 100
-                completionHandler(FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities), [], false, nil)
+                completionHandler(FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities), pendingFields, false, nil)
             } catch {
                 completionHandler(nil, changedFields, false, error)
             }
@@ -158,6 +192,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 defer { Task { await provider.disconnect() } }
                 let path = try codec.path(for: identifier)
                 let remote = try await provider.attributes(path: path)
+                let currentItem = FileProviderItem(remote: remote, codec: codec, providerCapabilities: provider.capabilities)
+                guard fileProviderVersionMatches(currentItem.itemVersion, version) else {
+                    throw NSFileProviderError(.cannotSynchronize)
+                }
                 try await RemoteFileOperations.removeRecursively(remote, provider: provider)
                 progress.completedUnitCount = 100
                 completionHandler(nil)

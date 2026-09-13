@@ -13,9 +13,9 @@ struct ConnectionEditorView: View {
     @State private var testing = false
     @State private var testMessage: String?
 
-    let onSave: (ConnectionProfile, Credential) -> Void
+    let onSave: (ConnectionProfile, Credential) throws -> Void
 
-    init(profile: ConnectionProfile, onSave: @escaping (ConnectionProfile, Credential) -> Void) {
+    init(profile: ConnectionProfile, onSave: @escaping (ConnectionProfile, Credential) throws -> Void) {
         let storedCredential = try? CredentialVault.shared.load(for: profile.id)
         _profile = State(initialValue: profile)
         _password = State(initialValue: storedCredential?.password ?? "")
@@ -119,14 +119,19 @@ struct ConnectionEditorView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        onSave(profile, Credential(
-                            username: profile.username,
-                            password: password,
-                            privateKey: privateKey,
-                            privateKeyName: privateKeyName,
-                            privateKeyPassphrase: privateKeyPassphrase.isEmpty ? nil : privateKeyPassphrase
-                        ))
-                        dismiss()
+                        do {
+                            try validateForSave()
+                            try onSave(profile, Credential(
+                                username: profile.username,
+                                password: password,
+                                privateKey: privateKey,
+                                privateKeyName: privateKeyName,
+                                privateKeyPassphrase: privateKeyPassphrase.isEmpty ? nil : privateKeyPassphrase
+                            ))
+                            dismiss()
+                        } catch {
+                            testMessage = error.localizedDescription
+                        }
                     }
                     .disabled(profile.name.isEmpty || profile.host.isEmpty)
                 }
@@ -179,6 +184,33 @@ struct ConnectionEditorView: View {
             testMessage = "Private key imported. Test the connection before saving."
         } catch {
             testMessage = error.localizedDescription
+        }
+    }
+
+    private func validateForSave() throws {
+        guard profile.protocolType == .webdav else { return }
+        let input = profile.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawBase: String
+        if input.contains("://") {
+            rawBase = input
+        } else {
+            let scheme = profile.useTLS ? "https" : "http"
+            let defaultPort = profile.useTLS ? 443 : 80
+            rawBase = "\(scheme)://\(input)" + (profile.port == defaultPort ? "" : ":\(profile.port)")
+        }
+        guard let parts = URLComponents(string: rawBase),
+              let scheme = parts.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              parts.host?.isEmpty == false else {
+            throw RemoteProviderError.invalidConfiguration("Invalid WebDAV server URL.")
+        }
+        guard parts.user == nil, parts.password == nil else {
+            throw RemoteProviderError.invalidConfiguration(
+                "Do not embed WebDAV credentials in the server URL. Use the Username and Password fields instead."
+            )
+        }
+        guard parts.query == nil, parts.fragment == nil else {
+            throw RemoteProviderError.invalidConfiguration("WebDAV server URL must not contain a query or fragment.")
         }
     }
 

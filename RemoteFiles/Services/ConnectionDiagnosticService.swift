@@ -16,14 +16,16 @@ enum ConnectionDiagnosticService {
     static func run(profile: ConnectionProfile, credential: Credential) async -> [DiagnosticStep] {
         var steps: [DiagnosticStep] = []
 
-        guard !profile.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              (1...65535).contains(profile.port) else {
-            return [DiagnosticStep(title: "Configuration", status: .failed, detail: "Host or port is invalid.")]
+        let endpoint: (host: String, port: Int)
+        do {
+            endpoint = try diagnosticEndpoint(for: profile)
+        } catch {
+            return [DiagnosticStep(title: "Configuration", status: .failed, detail: error.localizedDescription)]
         }
-        steps.append(.init(title: "Configuration", status: .passed, detail: "\(profile.host):\(profile.port)"))
+        steps.append(.init(title: "Configuration", status: .passed, detail: "\(endpoint.host):\(endpoint.port)"))
 
         do {
-            let latency = try await tcpProbe(host: profile.host, port: profile.port)
+            let latency = try await tcpProbe(host: endpoint.host, port: endpoint.port)
             steps.append(.init(
                 title: "Network",
                 status: .passed,
@@ -62,6 +64,36 @@ enum ConnectionDiagnosticService {
             steps.append(.init(title: "Authentication", status: .failed, detail: error.localizedDescription))
         }
         return steps
+    }
+
+    private static func diagnosticEndpoint(for profile: ConnectionProfile) throws -> (host: String, port: Int) {
+        let input = profile.host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty else {
+            throw RemoteProviderError.invalidConfiguration("Host is empty.")
+        }
+        if profile.protocolType == .webdav {
+            let rawBase: String
+            if input.contains("://") {
+                rawBase = input
+            } else {
+                let scheme = profile.useTLS ? "https" : "http"
+                let defaultPort = profile.useTLS ? 443 : 80
+                rawBase = "\(scheme)://\(input)" + (profile.port == defaultPort ? "" : ":\(profile.port)")
+            }
+            guard let parts = URLComponents(string: rawBase),
+                  let scheme = parts.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  let host = parts.host, !host.isEmpty,
+                  parts.user == nil, parts.password == nil,
+                  parts.query == nil, parts.fragment == nil else {
+                throw RemoteProviderError.invalidConfiguration("Invalid WebDAV server URL.")
+            }
+            return (host, parts.port ?? (scheme == "https" ? 443 : 80))
+        }
+        guard (1...65535).contains(profile.port) else {
+            throw RemoteProviderError.invalidConfiguration("Invalid TCP port.")
+        }
+        return (input, profile.port)
     }
 
     private static func tcpProbe(host: String, port: Int) async throws -> TimeInterval {

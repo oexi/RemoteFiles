@@ -64,10 +64,13 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
         task?.cancel()
         task = Task {
             do {
-                let previous = await FileProviderSnapshotStore.shared.load(
+                guard let previous = await FileProviderSnapshotStore.shared.load(
                     profileID: profile.id,
-                    containerIdentifier: containerIdentifier
-                )
+                    containerIdentifier: containerIdentifier,
+                    anchor: syncAnchor
+                ) else {
+                    throw NSFileProviderError(.syncAnchorExpired)
+                }
                 let credential = try CredentialVault.shared.load(for: profile.id)
                 let provider = try ProviderFactory.make(for: profile, credential: credential)
                 try await provider.connect()
@@ -75,21 +78,10 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
 
                 let path = try codec.path(for: containerIdentifier)
                 let remoteItems = try await provider.list(path: path)
-                let currentFingerprints = Dictionary(uniqueKeysWithValues: remoteItems.map { item in
-                    let fingerprint = [
-                        item.name,
-                        item.kind.rawValue,
-                        item.size.map(String.init) ?? "",
-                        item.modifiedAt.map { String($0.timeIntervalSince1970) } ?? "",
-                        item.createdAt.map { String($0.timeIntervalSince1970) } ?? "",
-                        item.revision.eTag ?? "",
-                        item.revision.opaqueIdentifier ?? ""
-                    ].joined(separator: "|")
-                    return (item.path, fingerprint)
-                })
+                let currentFingerprints = FileProviderSnapshotStore.fingerprints(for: remoteItems)
 
                 let changedRemote = remoteItems.filter { item in
-                    previous?.fingerprints[item.path] != currentFingerprints[item.path]
+                    previous.fingerprints[item.path] != currentFingerprints[item.path]
                 }
                 if !changedRemote.isEmpty {
                     let changedItems = changedRemote.map {
@@ -105,12 +97,10 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                     }
                 }
 
-                if let previous {
-                    let deleted = previous.fingerprints.keys
-                        .filter { currentFingerprints[$0] == nil }
-                        .map(codec.identifier(for:))
-                    if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
-                }
+                let deleted = previous.fingerprints.keys
+                    .filter { currentFingerprints[$0] == nil }
+                    .map(codec.identifier(for:))
+                if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
 
                 let snapshot = try await FileProviderSnapshotStore.shared.save(
                     profileID: profile.id,

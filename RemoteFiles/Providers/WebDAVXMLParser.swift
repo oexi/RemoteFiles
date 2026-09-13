@@ -46,7 +46,7 @@ final class WebDAVXMLParser: NSObject, XMLParserDelegate {
         let name = elementName.lowercased()
         let value = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
         switch name {
-        case "href": current?.path = URL(string: value)?.path ?? value
+        case "href": current?.path = value
         case "displayname": current?.displayName = value
         case "getcontentlength": current?.size = Int64(value)
         case "getlastmodified": current?.modifiedAt = Self.httpDate.date(from: value)

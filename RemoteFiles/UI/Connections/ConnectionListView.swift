@@ -46,14 +46,14 @@ struct ConnectionListView: View {
             }
             .sheet(isPresented: $showingNewConnection) {
                 ConnectionEditorView(profile: .empty()) { profile, credential in
+                    try CredentialVault.shared.save(credential, for: profile.id)
                     store.upsert(profile)
-                    try? CredentialVault.shared.save(credential, for: profile.id)
                 }
             }
             .sheet(item: $editingProfile) { profile in
                 ConnectionEditorView(profile: profile) { updated, credential in
+                    try CredentialVault.shared.save(credential, for: updated.id)
                     store.upsert(updated)
-                    try? CredentialVault.shared.save(credential, for: updated.id)
                 }
             }
         }

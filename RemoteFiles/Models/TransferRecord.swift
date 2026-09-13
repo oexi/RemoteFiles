@@ -4,6 +4,62 @@ enum TransferState: String, Codable, Sendable {
     case queued, running, completed, failed, cancelled
 }
 
+enum TransferResumeDecision: Equatable, Sendable {
+    case resume(UInt64)
+    case restart
+
+    var offset: UInt64 {
+        switch self {
+        case .resume(let offset): offset
+        case .restart: 0
+        }
+    }
+}
+
+enum TransferResumePolicy {
+    private static func strongETag(from revision: RemoteRevision) -> String? {
+        guard let raw = revision.eTag?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              !raw.uppercased().hasPrefix("W/") else {
+            return nil
+        }
+        return raw
+    }
+
+    static func decision(
+        transferredBytes: UInt64?,
+        persistedRevision: RemoteRevision?,
+        currentRevision: RemoteRevision
+    ) -> TransferResumeDecision {
+        guard let persistedRevision else {
+            return .restart
+        }
+
+        let persistedETag = strongETag(from: persistedRevision)
+        let currentETag = strongETag(from: currentRevision)
+
+        if persistedETag != nil || currentETag != nil {
+            guard let persistedETag,
+                  let currentETag,
+                  persistedETag == currentETag else {
+                return .restart
+            }
+            return .resume(transferredBytes ?? 0)
+        }
+
+        guard let persistedModifiedAt = persistedRevision.modifiedAt,
+              let currentModifiedAt = currentRevision.modifiedAt,
+              let persistedSize = persistedRevision.size,
+              let currentSize = currentRevision.size,
+              persistedModifiedAt == currentModifiedAt,
+              persistedSize == currentSize else {
+            return .restart
+        }
+
+        return .resume(transferredBytes ?? 0)
+    }
+}
+
 struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     let fileName: String
@@ -19,6 +75,7 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
     var transferredBytes: UInt64?
     var totalBytes: Int64?
     var errorMessage: String?
+    var sourceRevision: RemoteRevision?
 
     init(
         fileName: String,
@@ -29,7 +86,8 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         overwrite: Bool,
         source: String,
         destination: String,
-        totalBytes: Int64? = nil
+        totalBytes: Int64? = nil,
+        sourceRevision: RemoteRevision? = nil
     ) {
         id = UUID()
         self.fileName = fileName
@@ -44,6 +102,6 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         progress = 0
         transferredBytes = 0
         self.totalBytes = totalBytes
+        self.sourceRevision = sourceRevision
     }
 }
-

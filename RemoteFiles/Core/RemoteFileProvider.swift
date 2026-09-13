@@ -42,6 +42,10 @@ protocol RemoteChunkReadableProvider: Sendable {
     func openReadSession(path: String, offset: UInt64) async throws -> (any RemoteChunkReadSession)?
 }
 
+protocol RemoteChunkReadSupportProbing: Sendable {
+    func supportsChunkedReads(path: String) async throws -> Bool
+}
+
 protocol RemoteChunkReadSession: Sendable {
     func read(length: Int) async throws -> Data
     func close() async

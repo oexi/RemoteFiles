@@ -9,9 +9,14 @@ actor FileProviderSnapshotStore {
         var anchor: NSFileProviderSyncAnchor { NSFileProviderSyncAnchor(anchorData) }
     }
 
+    private struct State: Codable {
+        var snapshots: [Snapshot]
+    }
+
     static let shared = FileProviderSnapshotStore()
 
     private let root: URL
+    private let historyLimit = 16
 
     private init() {
         let fileManager = FileManager.default
@@ -22,9 +27,17 @@ actor FileProviderSnapshotStore {
     }
 
     func load(profileID: UUID, containerIdentifier: NSFileProviderItemIdentifier) -> Snapshot? {
-        let url = fileURL(profileID: profileID, containerIdentifier: containerIdentifier)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(Snapshot.self, from: data)
+        loadState(profileID: profileID, containerIdentifier: containerIdentifier)?.snapshots.last
+    }
+
+    func load(
+        profileID: UUID,
+        containerIdentifier: NSFileProviderItemIdentifier,
+        anchor: NSFileProviderSyncAnchor
+    ) -> Snapshot? {
+        loadState(profileID: profileID, containerIdentifier: containerIdentifier)?
+            .snapshots
+            .last(where: { $0.anchorData == anchor.rawValue })
     }
 
     @discardableResult
@@ -35,11 +48,33 @@ actor FileProviderSnapshotStore {
     ) throws -> Snapshot {
         let snapshot = Snapshot(
             anchorData: Data(UUID().uuidString.utf8),
-            fingerprints: Dictionary(uniqueKeysWithValues: items.map { ($0.path, Self.fingerprint($0)) })
+            fingerprints: Self.fingerprints(for: items)
         )
-        let data = try JSONEncoder().encode(snapshot)
+        var state = loadState(profileID: profileID, containerIdentifier: containerIdentifier)
+            ?? State(snapshots: [])
+        state.snapshots.append(snapshot)
+        if state.snapshots.count > historyLimit {
+            state.snapshots.removeFirst(state.snapshots.count - historyLimit)
+        }
+        let data = try JSONEncoder().encode(state)
         try data.write(to: fileURL(profileID: profileID, containerIdentifier: containerIdentifier), options: .atomic)
         return snapshot
+    }
+
+    static func fingerprints(for items: [RemoteItem]) -> [String: String] {
+        Dictionary(items.map { ($0.path, fingerprint($0)) }, uniquingKeysWith: { _, newest in newest })
+    }
+
+    private func loadState(profileID: UUID, containerIdentifier: NSFileProviderItemIdentifier) -> State? {
+        let url = fileURL(profileID: profileID, containerIdentifier: containerIdentifier)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        if let state = try? JSONDecoder().decode(State.self, from: data) {
+            return state
+        }
+        if let legacy = try? JSONDecoder().decode(Snapshot.self, from: data) {
+            return State(snapshots: [legacy])
+        }
+        return nil
     }
 
     private func fileURL(profileID: UUID, containerIdentifier: NSFileProviderItemIdentifier) -> URL {

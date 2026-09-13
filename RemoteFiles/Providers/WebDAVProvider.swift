@@ -1,8 +1,8 @@
 import Foundation
 
-final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
+final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, RemoteChunkReadSupportProbing, @unchecked Sendable {
     let profile: ConnectionProfile
-    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .copy, .randomRead, .fileRevisions])
+    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .copy, .fileRevisions])
 
     private let credential: Credential?
     private let session: URLSession
@@ -75,8 +75,24 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, @un
             throw RemoteProviderError.invalidResponse("Non-HTTP response.")
         }
         if http.statusCode == 206 { return data }
-        if http.statusCode == 200, offset == 0 { return Data(data.prefix(length)) }
         throw RemoteProviderError.unsupported("This WebDAV server does not support byte-range reads.")
+    }
+
+    func supportsChunkedReads(path: String) async throws -> Bool {
+        let request = try makeRequest(path: path, method: "HEAD")
+        let (_, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw RemoteProviderError.invalidResponse("Non-HTTP response.")
+        }
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw RemoteProviderError.authenticationRequired
+        }
+        guard (200..<300).contains(http.statusCode) else { return false }
+        return http.value(forHTTPHeaderField: "Accept-Ranges")?
+            .lowercased()
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .contains("bytes") == true
     }
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
@@ -89,7 +105,17 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, @un
     func createDirectory(path: String) async throws {
         let request = try makeRequest(path: path, method: "MKCOL")
         let (_, response) = try await session.data(for: request)
-        try validate(response, allowed: [201, 204, 405])
+        guard let http = response as? HTTPURLResponse else {
+            throw RemoteProviderError.invalidResponse("Non-HTTP response.")
+        }
+        if http.statusCode == 405 {
+            let existing = try await attributes(path: path)
+            guard existing.isDirectory else {
+                throw RemoteProviderError.conflict("A non-directory item already exists at \(path).")
+            }
+            return
+        }
+        try validate(response, allowed: [201, 204])
     }
 
     func remove(path: String, isDirectory: Bool) async throws {
@@ -138,19 +164,38 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, @un
         guard let parts = URLComponents(string: rawBase) else {
             throw RemoteProviderError.invalidConfiguration("Invalid WebDAV server URL.")
         }
+        guard let scheme = parts.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            throw RemoteProviderError.invalidConfiguration("WebDAV server URL must use http or https.")
+        }
+        guard parts.host?.isEmpty == false else {
+            throw RemoteProviderError.invalidConfiguration("WebDAV server URL is missing a host.")
+        }
+        guard parts.user == nil, parts.password == nil else {
+            throw RemoteProviderError.invalidConfiguration("Store WebDAV credentials separately instead of embedding them in the server URL.")
+        }
+        guard parts.query == nil, parts.fragment == nil else {
+            throw RemoteProviderError.invalidConfiguration("WebDAV server URL must not contain a query or fragment.")
+        }
         return parts
     }
 
-    private func relativeRemotePath(fromDAVHref href: String) throws -> String {
-        let decoded = href.removingPercentEncoding ?? href
-        let hrefPath = URL(string: decoded)?.path ?? decoded
+    func relativeRemotePath(fromDAVHref href: String) throws -> String {
+        let encodedPath = URLComponents(string: href)?.percentEncodedPath ?? href
+        let hrefPath = encodedPath
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map { component in
+                let value = String(component)
+                return value.removingPercentEncoding ?? value
+            }
+            .joined(separator: "/")
+        let normalizedHrefPath = "/" + hrefPath
         let basePath = try baseComponents().path
         let root = basePath.hasSuffix("/") ? String(basePath.dropLast()) : basePath
-        if hrefPath == root || hrefPath == root + "/" { return "/" }
-        if !root.isEmpty, hrefPath.hasPrefix(root + "/") {
-            return RemotePath.normalize(String(hrefPath.dropFirst(root.count)))
+        if normalizedHrefPath == root || normalizedHrefPath == root + "/" { return "/" }
+        if !root.isEmpty, normalizedHrefPath.hasPrefix(root + "/") {
+            return RemotePath.normalize(String(normalizedHrefPath.dropFirst(root.count)))
         }
-        return RemotePath.normalize(hrefPath)
+        return RemotePath.normalize(normalizedHrefPath)
     }
 
     private func validate(_ response: URLResponse, allowed: [Int]) throws {
