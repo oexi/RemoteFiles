@@ -117,7 +117,17 @@ extension RemoteFileProvider {
 
 enum RemotePath {
     static func normalize(_ path: String) -> String {
-        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        var components: [Substring] = []
+        for component in path.split(separator: "/", omittingEmptySubsequences: true) {
+            switch component {
+            case ".":
+                continue
+            case "..":
+                if !components.isEmpty { components.removeLast() }
+            default:
+                components.append(component)
+            }
+        }
         return "/" + components.joined(separator: "/")
     }
 
@@ -131,5 +141,28 @@ enum RemotePath {
         let value = (normalized as NSString).deletingLastPathComponent
         return value.isEmpty ? "/" : value
     }
-}
 
+    /// Returns whether `path` is the configured root or one of its descendants.
+    /// Both paths are canonicalized first so dot-segments cannot bypass the boundary.
+    static func isDescendantOrEqual(_ path: String, of root: String) -> Bool {
+        let normalizedPath = normalize(path)
+        let normalizedRoot = normalize(root)
+        guard normalizedRoot != "/" else { return true }
+        return normalizedPath == normalizedRoot || normalizedPath.hasPrefix(normalizedRoot + "/")
+    }
+
+    static func isDirectChild(_ path: String, of parent: String) -> Bool {
+        let pathComponents = normalize(path).split(separator: "/")
+        let parentComponents = normalize(parent).split(separator: "/")
+        guard pathComponents.count == parentComponents.count + 1 else { return false }
+        return zip(pathComponents, parentComponents).allSatisfy { pathComponent, parentComponent in
+            pathComponent == parentComponent
+        }
+    }
+
+    /// Returns a canonical path only when it stays within `root` (including `root`).
+    static func confined(_ path: String, to root: String) -> String? {
+        let normalizedPath = normalize(path)
+        return isDescendantOrEqual(normalizedPath, of: root) ? normalizedPath : nil
+    }
+}
