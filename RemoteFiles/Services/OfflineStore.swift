@@ -27,7 +27,7 @@ final class OfflineStore: ObservableObject {
     }
 
     /// Test-only root injection keeps the production storage layout unchanged.
-    init(root: URL) {
+    convenience init(root: URL) {
         let directory = root.deletingLastPathComponent()
         self.init(
             root: root,
