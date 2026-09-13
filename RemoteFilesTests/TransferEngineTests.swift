@@ -4,6 +4,53 @@ import XCTest
 
 @MainActor
 final class TransferEngineTests: XCTestCase {
+    func testLocalUploadAppearsInTransfers() async throws {
+        let profile = ConnectionProfile.empty(for: .ftp)
+        let provider = NoopTransferProvider(profile: profile)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesUploadTests-\(UUID())", isDirectory: true)
+        let localURL = directory.appendingPathComponent("upload.bin")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data(repeating: 0x42, count: 4096).write(to: localURL)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try await engine.uploadFile(localURL: localURL, to: provider, destinationPath: "/upload.bin")
+
+        let record = try XCTUnwrap(engine.records.first)
+        XCTAssertEqual(record.operationKind, .upload)
+        XCTAssertEqual(record.state, .completed)
+        XCTAssertEqual(record.transferredBytes, 4096)
+        XCTAssertEqual(record.totalBytes, 4096)
+    }
+
+    func testLocalDownloadAppearsInTransfers() async throws {
+        let data = Data("offline contents".utf8)
+        let profile = ConnectionProfile.empty(for: .ftp)
+        let provider = StaticDownloadProvider(profile: profile, data: data)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesDownloadTests-\(UUID())", isDirectory: true)
+        let localURL = directory.appendingPathComponent("offline.txt")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        let item = RemoteItem(
+            name: "offline.txt",
+            path: "/offline.txt",
+            kind: .file,
+            size: Int64(data.count)
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try await engine.downloadFile(item: item, from: provider, to: localURL)
+
+        XCTAssertEqual(try Data(contentsOf: localURL), data)
+        let record = try XCTUnwrap(engine.records.first)
+        XCTAssertEqual(record.operationKind, .download)
+        XCTAssertEqual(record.state, .completed)
+        XCTAssertEqual(record.transferredBytes, UInt64(data.count))
+        XCTAssertEqual(record.totalBytes, Int64(data.count))
+    }
+
     func testRetryWaitsForCancelledExecutionBeforeStartingReplacement() async throws {
         let downloadGate = TransferDownloadGate()
         let sourceProfile = ConnectionProfile.empty(for: .sftp)
@@ -55,6 +102,24 @@ final class TransferEngineTests: XCTestCase {
         }
         XCTFail("Timed out waiting for transfer state")
     }
+}
+
+private final class StaticDownloadProvider: RemoteFileProvider, @unchecked Sendable {
+    let profile: ConnectionProfile
+    let capabilities = ProviderCapabilities.basicReadWrite
+    private let data: Data
+
+    init(profile: ConnectionProfile, data: Data) {
+        self.profile = profile
+        self.data = data
+    }
+
+    func connect() async throws { }
+    func list(path: String) async throws -> [RemoteItem] { [] }
+    func download(path: String, to localURL: URL) async throws {
+        try data.write(to: localURL)
+    }
+    func upload(from localURL: URL, to path: String, overwrite: Bool) async throws { }
 }
 
 private final class TransferDownloadGate: @unchecked Sendable {

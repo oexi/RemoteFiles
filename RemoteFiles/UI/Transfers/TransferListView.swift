@@ -9,23 +9,36 @@ struct TransferListView: View {
             List(engine.records) { record in
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
-                        Image(systemName: icon(for: record.state))
+                        Image(systemName: icon(for: record))
                         Text(record.fileName).font(.headline).lineLimit(1)
                         Spacer()
+                        if record.state == .running {
+                            Text("\(Int((record.progress * 100).rounded()))%")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                         Text(record.state.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
                     }
                     ProgressView(value: record.progress)
-                    if let transferred = record.transferredBytes, transferred > 0 {
+                    if let transferred = record.transferredBytes,
+                       transferred > 0 || record.state == .running {
                         HStack(spacing: 4) {
                             Text(ByteCountFormatter.string(fromByteCount: Int64(clamping: transferred), countStyle: .file))
                             if let total = record.totalBytes, total > 0 {
                                 Text("of")
                                 Text(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))
                             }
+                            if let speed = record.bytesPerSecond, speed > 0, record.state == .running {
+                                Text("·")
+                                Text("\(ByteCountFormatter.string(fromByteCount: Int64(speed), countStyle: .file))/s")
+                            }
                         }
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     }
+                    Text(operationTitle(for: record))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
                     Text("\(record.source) → \(record.destination)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -44,10 +57,12 @@ struct TransferListView: View {
                         Button(role: .destructive) { engine.remove(record) } label: {
                             Label("Delete", systemImage: "trash")
                         }
-                        Button { engine.retry(record, using: connections) } label: {
-                            Label("Retry", systemImage: "arrow.clockwise")
+                        if record.operationKind == .serverToServer {
+                            Button { engine.retry(record, using: connections) } label: {
+                                Label("Retry", systemImage: "arrow.clockwise")
+                            }
+                            .tint(.blue)
                         }
-                        .tint(.blue)
                     } else if record.state == .completed {
                         Button(role: .destructive) { engine.remove(record) } label: {
                             Label("Delete", systemImage: "trash")
@@ -68,13 +83,26 @@ struct TransferListView: View {
         }
     }
 
-    private func icon(for state: TransferState) -> String {
-        switch state {
-        case .queued: "clock"
-        case .running: "arrow.triangle.2.circlepath"
-        case .completed: "checkmark.circle.fill"
-        case .failed: "exclamationmark.circle.fill"
-        case .cancelled: "xmark.circle"
+    private func icon(for record: TransferRecord) -> String {
+        switch record.state {
+        case .queued: return "clock"
+        case .completed: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.circle.fill"
+        case .cancelled: return "xmark.circle"
+        case .running:
+            switch record.operationKind {
+            case .upload: return "arrow.up.circle.fill"
+            case .download: return "arrow.down.circle.fill"
+            case .serverToServer: return "arrow.left.arrow.right.circle.fill"
+            }
+        }
+    }
+
+    private func operationTitle(for record: TransferRecord) -> String {
+        switch record.operationKind {
+        case .serverToServer: "Server to Server"
+        case .upload: "Upload"
+        case .download: "Download / Keep Offline"
         }
     }
 }

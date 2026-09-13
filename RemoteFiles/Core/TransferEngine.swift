@@ -51,14 +51,85 @@ final class TransferEngine: ObservableObject {
         start(record: record, item: item, source: source, destination: destination, disconnectSource: false)
     }
 
+    func uploadFile(
+        localURL: URL,
+        to destination: any RemoteFileProvider,
+        destinationPath: String,
+        overwrite: Bool = false
+    ) async throws {
+        let values = try localURL.resourceValues(forKeys: [.fileSizeKey])
+        let totalBytes = values.fileSize.map(Int64.init)
+        let record = TransferRecord(
+            fileName: localURL.lastPathComponent,
+            sourceProfileID: destination.profile.id,
+            sourcePath: localURL.path,
+            destinationProfileID: destination.profile.id,
+            destinationPath: destinationPath,
+            overwrite: overwrite,
+            source: "On Device:\(localURL.lastPathComponent)",
+            destination: "\(destination.profile.name):\(destinationPath)",
+            totalBytes: totalBytes,
+            kind: .upload
+        )
+        records.insert(record, at: 0)
+        persist()
+        await startLocalTransfer(record: record) { [weak self] token in
+            guard let self else { return }
+            try await self.performUpload(
+                recordID: record.id,
+                localURL: localURL,
+                destination: destination,
+                destinationPath: destinationPath,
+                overwrite: overwrite,
+                token: token
+            )
+        }
+        try throwIfFailed(recordID: record.id)
+    }
+
+    func downloadFile(
+        item: RemoteItem,
+        from source: any RemoteFileProvider,
+        to localURL: URL,
+        destinationLabel: String = "Offline"
+    ) async throws {
+        let record = TransferRecord(
+            fileName: item.name,
+            sourceProfileID: source.profile.id,
+            sourcePath: item.path,
+            destinationProfileID: source.profile.id,
+            destinationPath: localURL.path,
+            overwrite: true,
+            source: "\(source.profile.name):\(item.path)",
+            destination: "\(destinationLabel):\(item.name)",
+            totalBytes: item.size,
+            sourceRevision: item.revision,
+            kind: .download
+        )
+        records.insert(record, at: 0)
+        persist()
+        await startLocalTransfer(record: record) { [weak self] token in
+            guard let self else { return }
+            try await self.performDownload(
+                recordID: record.id,
+                item: item,
+                source: source,
+                localURL: localURL,
+                token: token
+            )
+        }
+        try throwIfFailed(recordID: record.id)
+    }
+
     func resumePending(using connections: ConnectionStore) {
-        for record in records where record.state == .queued {
+        for record in records where record.state == .queued && record.operationKind == .serverToServer {
             startPersisted(record, using: connections)
         }
     }
 
     func retry(_ record: TransferRecord, using connections: ConnectionStore) {
         guard let current = records.first(where: { $0.id == record.id }),
+              current.operationKind == .serverToServer,
               current.state == .failed || current.state == .cancelled else { return }
         update(current.id) {
             $0.state = .queued
@@ -252,6 +323,8 @@ final class TransferEngine: ObservableObject {
                 $0.totalBytes = item.size
                 $0.sourceRevision = item.revision
                 $0.transferredBytes = requestedResumeOffset
+                $0.startedAt = Date()
+                $0.bytesPerSecond = nil
             }
             try checkExecution(token, for: id)
             let overwrite = records.first(where: { $0.id == id })?.overwrite ?? false
@@ -275,12 +348,17 @@ final class TransferEngine: ObservableObject {
             } else {
                 update(id, token: token) { $0.transferredBytes = 0; $0.progress = 0.05 }
                 try checkExecution(token, for: id)
+                let startedAt = Date()
                 let tempURL = try await CacheManager.shared.temporaryURL(fileName: item.name)
                 defer { try? FileManager.default.removeItem(at: tempURL) }
                 try await source.download(path: item.path, to: tempURL)
                 try checkExecution(token, for: id)
                 update(id, token: token) { $0.progress = 0.55 }
                 try await destination.upload(from: tempURL, to: destinationPath, overwrite: overwrite)
+                if let total = item.size, total > 0 {
+                    updateSpeed(id: id, token: token, transferredBytes: UInt64(total), baselineBytes: 0, startedAt: startedAt)
+                    update(id, token: token) { $0.transferredBytes = UInt64(total) }
+                }
             }
             try checkExecution(token, for: id)
             if let expected = item.size,
@@ -355,6 +433,9 @@ final class TransferEngine: ObservableObject {
             $0.progress = 0.05 + 0.9 * min(1, fraction)
         }
 
+        let speedBaseline = offset
+        let speedStartedAt = Date()
+
         let readSession = try await reader.openReadSession(path: item.path, offset: offset)
         try checkExecution(token, for: recordID)
         do {
@@ -384,6 +465,13 @@ final class TransferEngine: ObservableObject {
                     $0.transferredBytes = offset
                     $0.progress = 0.05 + 0.9 * min(1, fraction)
                 }
+                updateSpeed(
+                    id: recordID,
+                    token: token,
+                    transferredBytes: offset,
+                    baselineBytes: speedBaseline,
+                    startedAt: speedStartedAt
+                )
             }
             try checkExecution(token, for: recordID)
             await readSession?.close()
@@ -486,12 +574,229 @@ final class TransferEngine: ObservableObject {
         persist()
     }
 
+    private func startLocalTransfer(
+        record: TransferRecord,
+        operation: @escaping (TransferExecutionToken) async throws -> Void
+    ) async {
+        let id = record.id
+        guard tasks[id] == nil else { return }
+        let token = beginExecution(for: id)
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try self.checkExecution(token, for: id)
+                try await operation(token)
+                try self.checkExecution(token, for: id)
+                self.update(id, token: token) {
+                    $0.state = .completed
+                    $0.progress = 1
+                    $0.errorMessage = nil
+                }
+            } catch is CancellationError {
+                self.update(id, token: token) {
+                    $0.state = .cancelled
+                    $0.errorMessage = nil
+                }
+            } catch {
+                self.update(id, token: token) {
+                    $0.state = .failed
+                    $0.errorMessage = error.localizedDescription
+                }
+            }
+            self.finishExecution(for: id, token: token)
+        }
+        tasks[id] = ActiveTask(token: token, task: task)
+        await task.value
+    }
+
+    private func performUpload(
+        recordID id: UUID,
+        localURL: URL,
+        destination: any RemoteFileProvider,
+        destinationPath: String,
+        overwrite: Bool,
+        token: TransferExecutionToken
+    ) async throws {
+        let values = try localURL.resourceValues(forKeys: [.fileSizeKey])
+        let totalBytes = UInt64(max(0, values.fileSize ?? 0))
+        let startedAt = Date()
+        update(id, token: token) {
+            $0.state = .running
+            $0.progress = totalBytes == 0 ? 0.5 : 0
+            $0.totalBytes = Int64(clamping: totalBytes)
+            $0.transferredBytes = 0
+            $0.startedAt = startedAt
+            $0.bytesPerSecond = nil
+        }
+        try checkExecution(token, for: id)
+
+        if let writer = destination as? any RemoteChunkWritableProvider {
+            let usePartial = destination.capabilities.contains(.move)
+            let targetPath = usePartial ? streamPartialPath(for: destinationPath, recordID: id) : destinationPath
+            let opened = try await writer.openWriteSession(path: targetPath, overwrite: usePartial ? true : overwrite, resumeOffset: 0)
+            let session = opened?.session
+            let preparedOffset: UInt64
+            if let opened {
+                preparedOffset = opened.offset
+            } else {
+                preparedOffset = try await writer.prepareChunkedUpload(
+                    path: targetPath,
+                    overwrite: usePartial ? true : overwrite,
+                    resumeOffset: 0
+                )
+            }
+            guard preparedOffset == 0 else {
+                await session?.abort()
+                throw RemoteProviderError.invalidResponse("The upload destination did not start at byte 0.")
+            }
+
+            let handle = try FileHandle(forReadingFrom: localURL)
+            defer { try? handle.close() }
+            var offset: UInt64 = 0
+            do {
+                while offset < totalBytes {
+                    try checkExecution(token, for: id)
+                    let length = Int(min(UInt64(1024 * 1024), totalBytes - offset))
+                    guard let data = try handle.read(upToCount: length), !data.isEmpty else {
+                        throw RemoteProviderError.invalidResponse("The local file ended before the expected size was reached.")
+                    }
+                    if let session {
+                        try await session.write(data, at: offset)
+                    } else {
+                        try await writer.writeChunk(path: targetPath, data: data, offset: offset)
+                    }
+                    offset += UInt64(data.count)
+                    let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
+                    update(id, token: token) {
+                        $0.transferredBytes = offset
+                        $0.progress = min(1, fraction)
+                    }
+                    updateSpeed(id: id, token: token, transferredBytes: offset, baselineBytes: 0, startedAt: startedAt)
+                }
+                if let session {
+                    try await session.finish()
+                } else {
+                    try await writer.finishChunkedUpload(path: targetPath)
+                }
+                if usePartial {
+                    try await destination.move(from: targetPath, to: destinationPath, overwrite: overwrite)
+                }
+            } catch {
+                await session?.abort()
+                throw error
+            }
+        } else {
+            try await destination.upload(from: localURL, to: destinationPath, overwrite: overwrite)
+            update(id, token: token) { $0.transferredBytes = totalBytes }
+            updateSpeed(id: id, token: token, transferredBytes: totalBytes, baselineBytes: 0, startedAt: startedAt)
+        }
+    }
+
+    private func performDownload(
+        recordID id: UUID,
+        item: RemoteItem,
+        source: any RemoteFileProvider,
+        localURL: URL,
+        token: TransferExecutionToken
+    ) async throws {
+        try FileManager.default.createDirectory(at: localURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: localURL)
+        let startedAt = Date()
+        update(id, token: token) {
+            $0.state = .running
+            $0.progress = 0
+            $0.transferredBytes = 0
+            $0.totalBytes = item.size
+            $0.startedAt = startedAt
+            $0.bytesPerSecond = nil
+        }
+        do {
+            var canReadChunks = source is any RemoteChunkReadableProvider
+            if canReadChunks, let probing = source as? any RemoteChunkReadSupportProbing {
+                canReadChunks = try await probing.supportsChunkedReads(path: item.path)
+            }
+            if canReadChunks,
+               let reader = source as? any RemoteChunkReadableProvider,
+               let size = item.size, size >= 0 {
+                FileManager.default.createFile(atPath: localURL.path, contents: nil)
+                let handle = try FileHandle(forWritingTo: localURL)
+                defer { try? handle.close() }
+                let totalBytes = UInt64(size)
+                var offset: UInt64 = 0
+                let session = try await reader.openReadSession(path: item.path, offset: 0)
+                do {
+                    while offset < totalBytes {
+                        try checkExecution(token, for: id)
+                        let length = Int(min(UInt64(1024 * 1024), totalBytes - offset))
+                        let data: Data
+                        if let session {
+                            data = try await session.read(length: length)
+                        } else {
+                            data = try await reader.readChunk(path: item.path, offset: offset, length: length)
+                        }
+                        guard !data.isEmpty else {
+                            throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
+                        }
+                        try handle.write(contentsOf: data)
+                        offset += UInt64(data.count)
+                        let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
+                        update(id, token: token) {
+                            $0.transferredBytes = offset
+                            $0.progress = min(1, fraction)
+                        }
+                        updateSpeed(id: id, token: token, transferredBytes: offset, baselineBytes: 0, startedAt: startedAt)
+                    }
+                    await session?.close()
+                } catch {
+                    await session?.close()
+                    throw error
+                }
+            } else {
+                try await source.download(path: item.path, to: localURL)
+                let actual = (try? localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { UInt64($0) } ?? 0
+                update(id, token: token) { $0.transferredBytes = actual }
+                updateSpeed(id: id, token: token, transferredBytes: actual, baselineBytes: 0, startedAt: startedAt)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: localURL)
+            throw error
+        }
+    }
+
+    private func updateSpeed(
+        id: UUID,
+        token: TransferExecutionToken,
+        transferredBytes: UInt64,
+        baselineBytes: UInt64,
+        startedAt: Date
+    ) {
+        let elapsed = Date().timeIntervalSince(startedAt)
+        guard elapsed >= 0.2, transferredBytes >= baselineBytes else { return }
+        let speed = Double(transferredBytes - baselineBytes) / elapsed
+        update(id, token: token) { $0.bytesPerSecond = speed }
+    }
+
+    private func throwIfFailed(recordID id: UUID) throws {
+        guard let record = records.first(where: { $0.id == id }) else { return }
+        if record.state == .failed {
+            throw RemoteProviderError.invalidResponse(record.errorMessage ?? "Transfer failed.")
+        }
+        if record.state == .cancelled {
+            throw CancellationError()
+        }
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               var decoded = try? JSONDecoder().decode([TransferRecord].self, from: data) else { return }
-        for index in decoded.indices where decoded[index].state == .running {
-            decoded[index].state = .queued
-            decoded[index].errorMessage = nil
+        for index in decoded.indices where decoded[index].state == .running || decoded[index].state == .queued {
+            if decoded[index].operationKind == .serverToServer {
+                decoded[index].state = .queued
+                decoded[index].errorMessage = nil
+            } else {
+                decoded[index].state = .failed
+                decoded[index].errorMessage = "This local transfer was interrupted and cannot be resumed automatically."
+            }
         }
         records = decoded
     }

@@ -33,6 +33,7 @@ struct BrowserView: View {
     @State private var showingBatchDeleteConfirmation = false
     @State private var permissionItem: RemoteItem?
     @State private var accessControlItem: RemoteItem?
+    @State private var propertiesItem: RemoteItem?
     @State private var copyItem: RemoteItem?
     @State private var pendingDeleteItem: RemoteItem?
     @State private var offlineWorkingPath: String?
@@ -120,7 +121,7 @@ struct BrowserView: View {
                 mode: importSelection.pickerMode,
                 onPick: { urls in
                     showingImporter = false
-                    Task { await model.upload(localURLs: urls) }
+                    Task { await model.upload(localURLs: urls, transfers: transfers) }
                 },
                 onCancel: {
                     showingImporter = false
@@ -174,6 +175,11 @@ struct BrowserView: View {
         .sheet(item: $accessControlItem) { item in
             if let provider = model.provider {
                 AccessControlView(provider: provider, item: item)
+            }
+        }
+        .sheet(item: $propertiesItem) { item in
+            if let provider = model.provider {
+                RemoteItemPropertiesView(provider: provider, item: item)
             }
         }
         .sheet(item: $copyItem) { item in
@@ -285,7 +291,11 @@ struct BrowserView: View {
                         HStack(spacing: 10) {
                             Image(systemName: selectedPaths.contains(item.path) ? "checkmark.circle.fill" : "circle")
                                 .foregroundStyle(selectedPaths.contains(item.path) ? Color.accentColor : Color.secondary)
-                            FileRow(item: item, provider: model.provider)
+                            FileRow(
+                                item: item,
+                                provider: model.provider,
+                                displaySize: item.isDirectory ? nil : item.size
+                            )
                         }
                     }
                     .buttonStyle(.plain)
@@ -431,7 +441,12 @@ struct BrowserView: View {
             searchFocused = false
         }
 
-        if !item.isDirectory, let provider = model.provider {
+        Button("Properties", systemImage: "info.circle") {
+            propertiesItem = item
+            searchFocused = false
+        }
+
+        if let provider = model.provider {
             Button(
                 offline.isPinned(profileID: provider.profile.id, path: item.path) ? "Remove Offline Copy" : "Keep Offline",
                 systemImage: offline.isPinned(profileID: provider.profile.id, path: item.path) ? "checkmark.circle.fill" : "arrow.down.circle"
@@ -440,8 +455,10 @@ struct BrowserView: View {
             }
             .disabled(offlineWorkingPath != nil)
 
-            Button("Copy to Server", systemImage: "arrow.right.doc.on.clipboard") {
-                copyItem = item
+            if !item.isDirectory {
+                Button("Copy to Server", systemImage: "arrow.right.doc.on.clipboard") {
+                    copyItem = item
+                }
             }
         }
 
@@ -484,7 +501,7 @@ struct BrowserView: View {
             return
         }
         do {
-            try await offline.pin(provider: provider, item: item)
+            try await offline.pin(provider: provider, item: item, transfers: transfers)
         } catch {
             model.errorMessage = error.localizedDescription
         }
@@ -503,14 +520,30 @@ struct BrowserView: View {
     @ViewBuilder
     private func itemRow(_ item: RemoteItem) -> some View {
         if item.isDirectory {
-            Button { Task { await model.enter(item) } } label: { FileRow(item: item, provider: model.provider) }
+            Button { Task { await model.enter(item) } } label: {
+                FileRow(
+                    item: item,
+                    provider: model.provider,
+                    displaySize: nil
+                )
+            }
                 .buttonStyle(.plain)
         } else if let provider = model.provider {
             NavigationLink {
                 FileDetailView(provider: provider, item: item)
-            } label: { FileRow(item: item, provider: provider) }
+            } label: {
+                FileRow(
+                    item: item,
+                    provider: provider,
+                    displaySize: item.size
+                )
+            }
         } else {
-            FileRow(item: item, provider: nil)
+            FileRow(
+                item: item,
+                provider: nil,
+                displaySize: item.isDirectory ? nil : item.size
+            )
         }
     }
 }
@@ -518,6 +551,7 @@ struct BrowserView: View {
 private struct FileRow: View {
     let item: RemoteItem
     let provider: (any RemoteFileProvider)?
+    let displaySize: Int64?
     @State private var thumbnail: UIImage?
 
     var body: some View {
@@ -537,8 +571,12 @@ private struct FileRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name).lineLimit(1)
                 HStack(spacing: 8) {
-                    if let size = item.size {
-                        Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                    if !item.isDirectory {
+                        if let size = displaySize {
+                            Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                        } else {
+                            Text("—")
+                        }
                     }
                     if let date = item.modifiedAt {
                         Text(date, style: .date)
@@ -571,6 +609,113 @@ private struct FileRow: View {
         if ["mp4", "mov", "m4v", "mkv"].contains(ext) { return "film.fill" }
         if ext == "pdf" { return "doc.richtext.fill" }
         return "doc.fill"
+    }
+}
+
+private struct RemoteItemPropertiesView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let provider: any RemoteFileProvider
+    let item: RemoteItem
+
+    @State private var resolvedSize: Int64?
+    @State private var calculatingSize = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("General") {
+                    LabeledContent("Name", value: item.name)
+                    LabeledContent("Type", value: item.isDirectory ? "Folder" : "File")
+                    LabeledContent("Path", value: item.path)
+                    LabeledContent("Size") {
+                        if let size = resolvedSize ?? (!item.isDirectory ? item.size : nil) {
+                            Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                        } else if calculatingSize {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Calculating…")
+                            }
+                        } else {
+                            Text("Unavailable")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section("Dates") {
+                    if let modifiedAt = item.modifiedAt {
+                        LabeledContent("Modified") { Text(modifiedAt, style: .date) }
+                    }
+                    if let createdAt = item.createdAt {
+                        LabeledContent("Created") { Text(createdAt, style: .date) }
+                    }
+                }
+
+                if let permissions = item.permissions {
+                    Section("Permissions") {
+                        LabeledContent(
+                            "Mode",
+                            value: String(format: "%04o", permissions & 0o7777)
+                        )
+                    }
+                }
+            }
+            .navigationTitle("Properties")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task {
+                await loadSize()
+            }
+            .alert("Properties", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )) {
+                Button("OK") { errorMessage = nil }
+            } message: {
+                Text(errorMessage ?? "")
+            }
+        }
+    }
+
+    private func loadSize() async {
+        calculatingSize = true
+        defer { calculatingSize = false }
+        do {
+            if item.isDirectory {
+                resolvedSize = try await recursiveDirectorySize(path: item.path)
+            } else if item.size == nil {
+                let attributes = try await provider.attributes(path: item.path)
+                resolvedSize = attributes.size
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func recursiveDirectorySize(path: String) async throws -> Int64 {
+        try Task.checkCancellation()
+        let children = try await provider.list(path: path)
+        var total: Int64 = 0
+        for child in children {
+            try Task.checkCancellation()
+            if child.isDirectory {
+                total += try await recursiveDirectorySize(path: child.path)
+            } else if let size = child.size {
+                total += max(0, size)
+            } else if let attributes = try? await provider.attributes(path: child.path),
+                      let size = attributes.size {
+                total += max(0, size)
+            }
+        }
+        return total
     }
 }
 

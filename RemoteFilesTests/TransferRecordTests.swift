@@ -74,6 +74,35 @@ final class TransferRecordTests: XCTestCase {
         XCTAssertEqual(decoded.totalBytes, record.totalBytes)
     }
 
+    func testLegacyDecodeDefaultsToServerTransfer() throws {
+        let record = TransferRecord(
+            fileName: "legacy.bin",
+            sourceProfileID: UUID(),
+            sourcePath: "/legacy.bin",
+            destinationProfileID: UUID(),
+            destinationPath: "/legacy.bin",
+            overwrite: false,
+            source: "A:/legacy.bin",
+            destination: "B:/legacy.bin",
+            totalBytes: 10
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any]
+        )
+        object.removeValue(forKey: "kind")
+        object.removeValue(forKey: "bytesPerSecond")
+        object.removeValue(forKey: "startedAt")
+
+        let decoded = try JSONDecoder().decode(
+            TransferRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        XCTAssertEqual(decoded.operationKind, .serverToServer)
+        XCTAssertNil(decoded.bytesPerSecond)
+        XCTAssertNil(decoded.startedAt)
+    }
+
     func testResumePolicyETagRules() {
         let transferredBytes: UInt64 = 42
         let oldDate = Date(timeIntervalSince1970: 1_700_000_000)

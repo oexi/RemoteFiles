@@ -94,7 +94,7 @@ struct FileDetailView: View {
             return
         }
         do {
-            try await offline.pin(provider: provider, item: item)
+            try await offline.pin(provider: provider, item: item, transfers: transfers)
         } catch {
             copyError = error.localizedDescription
         }

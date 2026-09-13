@@ -9,16 +9,19 @@ struct OfflineListView: View {
                 NavigationLink {
                     OfflineDetailView(item: item)
                 } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.fileName).lineLimit(1)
-                        HStack {
-                            Text(item.profileName)
-                            if let size = item.size {
-                                Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                    HStack(spacing: 10) {
+                        Image(systemName: item.directory ? "folder.fill" : "doc.fill")
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.fileName).lineLimit(1)
+                            HStack {
+                                Text(item.profileName)
+                                if let size = item.size {
+                                    Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                }
                             }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     }
                 }
                 .swipeActions {
@@ -30,9 +33,9 @@ struct OfflineListView: View {
             .overlay {
                 if offline.items.isEmpty {
                     ContentUnavailableView(
-                        "No Offline Files",
+                        "No Offline Items",
                         systemImage: "arrow.down.circle",
-                        description: Text("Keep remote files offline to access them without a server connection.")
+                        description: Text("Keep remote files or folders offline to access them without a server connection.")
                     )
                 }
             }

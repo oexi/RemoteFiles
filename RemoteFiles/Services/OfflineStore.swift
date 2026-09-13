@@ -27,7 +27,11 @@ final class OfflineStore: ObservableObject {
         items.contains { $0.profileID == profileID && $0.remotePath == path }
     }
 
-    func pin(provider: any RemoteFileProvider, item: RemoteItem) async throws {
+    func pin(
+        provider: any RemoteFileProvider,
+        item: RemoteItem,
+        transfers: TransferEngine
+    ) async throws {
         if let existing = items.first(where: { $0.profileID == provider.profile.id && $0.remotePath == item.path }) {
             try? FileManager.default.removeItem(at: localURL(for: existing))
             try? FileManager.default.removeItem(at: exportRoot.appendingPathComponent(existing.id.uuidString, isDirectory: true))
@@ -36,8 +40,40 @@ final class OfflineStore: ObservableObject {
         let id = UUID()
         let safeName = item.name.replacingOccurrences(of: "/", with: "_")
         let stored = id.uuidString + "-" + safeName
-        let destination = root.appendingPathComponent(stored)
-        try await provider.download(path: item.path, to: destination)
+        let destination = root.appendingPathComponent(stored, isDirectory: item.isDirectory)
+        let totalSize: Int64?
+        if item.isDirectory {
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            do {
+                totalSize = try await downloadDirectory(
+                    provider: provider,
+                    remotePath: item.path,
+                    localDirectory: destination,
+                    transfers: transfers
+                )
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
+        } else {
+            do {
+                try await transfers.downloadFile(
+                    item: item,
+                    from: provider,
+                    to: destination,
+                    destinationLabel: "Offline"
+                )
+                if let size = item.size {
+                    totalSize = size
+                } else {
+                    totalSize = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+                        .map(Int64.init)
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: destination)
+                throw error
+            }
+        }
         let record = OfflineItem(
             id: id,
             profileID: provider.profile.id,
@@ -45,8 +81,9 @@ final class OfflineStore: ObservableObject {
             remotePath: item.path,
             fileName: item.name,
             storedFileName: stored,
-            size: item.size,
-            pinnedAt: Date()
+            size: totalSize,
+            pinnedAt: Date(),
+            isDirectory: item.isDirectory
         )
         items.insert(record, at: 0)
         persist()
@@ -95,12 +132,30 @@ final class OfflineStore: ObservableObject {
         }.value
     }
 
-    func copyToServer(_ item: OfflineItem, destination profile: ConnectionProfile) async throws {
+    func copyToServer(
+        _ item: OfflineItem,
+        destination profile: ConnectionProfile,
+        transfers: TransferEngine
+    ) async throws {
         let provider = try ProviderFactory.make(for: profile)
         try await provider.connect()
         do {
             let target = RemotePath.join(RemotePath.normalize(profile.initialPath), item.fileName)
-            try await provider.upload(from: localURL(for: item), to: target, overwrite: false)
+            if item.directory {
+                try await uploadDirectory(
+                    localDirectory: localURL(for: item),
+                    remotePath: target,
+                    provider: provider,
+                    transfers: transfers
+                )
+            } else {
+                try await transfers.uploadFile(
+                    localURL: localURL(for: item),
+                    to: provider,
+                    destinationPath: target,
+                    overwrite: false
+                )
+            }
             await provider.disconnect()
         } catch {
             await provider.disconnect()
@@ -172,6 +227,83 @@ final class OfflineStore: ObservableObject {
     private func persist() {
         guard let data = try? JSONEncoder().encode(items) else { return }
         try? data.write(to: indexURL, options: .atomic)
+    }
+
+    private func downloadDirectory(
+        provider: any RemoteFileProvider,
+        remotePath: String,
+        localDirectory: URL,
+        transfers: TransferEngine
+    ) async throws -> Int64 {
+        try Task.checkCancellation()
+        let children = try await provider.list(path: remotePath)
+        var total: Int64 = 0
+        for child in children {
+            try Task.checkCancellation()
+            let localChild = localDirectory.appendingPathComponent(child.name, isDirectory: child.isDirectory)
+            if child.isDirectory {
+                try FileManager.default.createDirectory(at: localChild, withIntermediateDirectories: true)
+                total += try await downloadDirectory(
+                    provider: provider,
+                    remotePath: child.path,
+                    localDirectory: localChild,
+                    transfers: transfers
+                )
+            } else {
+                try await transfers.downloadFile(
+                    item: child,
+                    from: provider,
+                    to: localChild,
+                    destinationLabel: "Offline"
+                )
+                if let size = child.size {
+                    total += max(0, size)
+                } else if let size = try? localChild.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                    total += Int64(size)
+                }
+            }
+        }
+        return total
+    }
+
+    private func uploadDirectory(
+        localDirectory: URL,
+        remotePath: String,
+        provider: any RemoteFileProvider,
+        transfers: TransferEngine
+    ) async throws {
+        do {
+            try await provider.createDirectory(path: remotePath)
+        } catch {
+            let existing = try? await provider.attributes(path: remotePath)
+            guard existing?.isDirectory == true else { throw error }
+        }
+
+        let children = try FileManager.default.contentsOfDirectory(
+            at: localDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        for child in children {
+            try Task.checkCancellation()
+            let values = try child.resourceValues(forKeys: [.isDirectoryKey])
+            let childRemotePath = RemotePath.join(remotePath, child.lastPathComponent)
+            if values.isDirectory == true {
+                try await uploadDirectory(
+                    localDirectory: child,
+                    remotePath: childRemotePath,
+                    provider: provider,
+                    transfers: transfers
+                )
+            } else {
+                try await transfers.uploadFile(
+                    localURL: child,
+                    to: provider,
+                    destinationPath: childRemotePath,
+                    overwrite: false
+                )
+            }
+        }
     }
 
     private nonisolated static func regularFiles(under root: URL) throws -> [URL] {

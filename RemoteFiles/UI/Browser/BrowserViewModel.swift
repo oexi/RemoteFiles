@@ -177,7 +177,7 @@ final class BrowserViewModel: ObservableObject {
         }
     }
 
-    func upload(localURLs: [URL]) async {
+    func upload(localURLs: [URL], transfers: TransferEngine) async {
         guard let provider else { return }
         uploading = true
         defer { uploading = false }
@@ -194,7 +194,12 @@ final class BrowserViewModel: ObservableObject {
                 let stagedURL = try await Task.detached(priority: .userInitiated) {
                     try Self.stageImportedURL(url, under: stagingRoot)
                 }.value
-                try await uploadRecursively(localURL: stagedURL, remoteParent: currentPath, provider: provider)
+                try await uploadRecursively(
+                    localURL: stagedURL,
+                    remoteParent: currentPath,
+                    provider: provider,
+                    transfers: transfers
+                )
             }
             await refresh()
         } catch { errorMessage = error.localizedDescription }
@@ -212,7 +217,8 @@ final class BrowserViewModel: ObservableObject {
     private func uploadRecursively(
         localURL: URL,
         remoteParent: String,
-        provider: any RemoteFileProvider
+        provider: any RemoteFileProvider,
+        transfers: TransferEngine
     ) async throws {
         let values = try localURL.resourceValues(forKeys: [.isDirectoryKey])
         let remotePath = RemotePath.join(remoteParent, localURL.lastPathComponent)
@@ -230,10 +236,20 @@ final class BrowserViewModel: ObservableObject {
             )
             for child in children {
                 try Task.checkCancellation()
-                try await uploadRecursively(localURL: child, remoteParent: remotePath, provider: provider)
+                try await uploadRecursively(
+                    localURL: child,
+                    remoteParent: remotePath,
+                    provider: provider,
+                    transfers: transfers
+                )
             }
         } else {
-            try await provider.upload(from: localURL, to: remotePath, overwrite: false)
+            try await transfers.uploadFile(
+                localURL: localURL,
+                to: provider,
+                destinationPath: remotePath,
+                overwrite: false
+            )
         }
     }
 

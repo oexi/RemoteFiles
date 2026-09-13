@@ -4,6 +4,12 @@ enum TransferState: String, Codable, Sendable {
     case queued, running, completed, failed, cancelled
 }
 
+enum TransferKind: String, Codable, Sendable {
+    case serverToServer
+    case upload
+    case download
+}
+
 enum TransferResumeDecision: Equatable, Sendable {
     case resume(UInt64)
     case restart
@@ -76,6 +82,11 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
     var totalBytes: Int64?
     var errorMessage: String?
     var sourceRevision: RemoteRevision?
+    var kind: TransferKind?
+    var bytesPerSecond: Double?
+    var startedAt: Date?
+
+    var operationKind: TransferKind { kind ?? .serverToServer }
 
     init(
         fileName: String,
@@ -87,7 +98,8 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         source: String,
         destination: String,
         totalBytes: Int64? = nil,
-        sourceRevision: RemoteRevision? = nil
+        sourceRevision: RemoteRevision? = nil,
+        kind: TransferKind = .serverToServer
     ) {
         id = UUID()
         self.fileName = fileName
@@ -103,5 +115,8 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         transferredBytes = 0
         self.totalBytes = totalBytes
         self.sourceRevision = sourceRevision
+        self.kind = kind
+        bytesPerSecond = nil
+        startedAt = nil
     }
 }
