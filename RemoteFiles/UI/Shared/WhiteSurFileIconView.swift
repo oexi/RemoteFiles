@@ -74,6 +74,7 @@ struct WhiteSurFileIconView: View {
 
     var body: some View {
         Image(WhiteSurFileIcon.assetName(fileName: fileName, isDirectory: isDirectory))
+            .renderingMode(.original)
             .resizable()
             .scaledToFit()
             .frame(width: size, height: size)
