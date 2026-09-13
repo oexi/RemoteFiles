@@ -619,6 +619,7 @@ private struct RemoteItemPropertiesView: View {
     let item: RemoteItem
 
     @State private var resolvedSize: Int64?
+    @State private var skippedItemCount = 0
     @State private var calculatingSize = false
     @State private var errorMessage: String?
 
@@ -641,6 +642,16 @@ private struct RemoteItemPropertiesView: View {
                             Text("Unavailable")
                                 .foregroundStyle(.secondary)
                         }
+                    }
+                    if item.isDirectory, skippedItemCount > 0 {
+                        Text("Skipped \(skippedItemCount) inaccessible item(s) while calculating.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
                     }
                 }
 
@@ -672,14 +683,6 @@ private struct RemoteItemPropertiesView: View {
             .task {
                 await loadSize()
             }
-            .alert("Properties", isPresented: Binding(
-                get: { errorMessage != nil },
-                set: { if !$0 { errorMessage = nil } }
-            )) {
-                Button("OK") { errorMessage = nil }
-            } message: {
-                Text(errorMessage ?? "")
-            }
         }
     }
 
@@ -688,7 +691,12 @@ private struct RemoteItemPropertiesView: View {
         defer { calculatingSize = false }
         do {
             if item.isDirectory {
-                resolvedSize = try await recursiveDirectorySize(path: item.path)
+                let result = try await RemoteDirectorySizeCalculator.calculate(
+                    path: item.path,
+                    provider: provider
+                )
+                resolvedSize = result.bytes
+                skippedItemCount = result.skippedItemCount
             } else if item.size == nil {
                 let attributes = try await provider.attributes(path: item.path)
                 resolvedSize = attributes.size
@@ -700,22 +708,5 @@ private struct RemoteItemPropertiesView: View {
         }
     }
 
-    private func recursiveDirectorySize(path: String) async throws -> Int64 {
-        try Task.checkCancellation()
-        let children = try await provider.list(path: path)
-        var total: Int64 = 0
-        for child in children {
-            try Task.checkCancellation()
-            if child.isDirectory {
-                total += try await recursiveDirectorySize(path: child.path)
-            } else if let size = child.size {
-                total += max(0, size)
-            } else if let attributes = try? await provider.attributes(path: child.path),
-                      let size = attributes.size {
-                total += max(0, size)
-            }
-        }
-        return total
-    }
 }
 

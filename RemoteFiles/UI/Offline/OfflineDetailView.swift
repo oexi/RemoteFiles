@@ -19,7 +19,7 @@ struct OfflineDetailView: View {
     var body: some View {
         Group {
             if item.directory {
-                OfflineFolderContentView(rootURL: url)
+                OfflineFolderContentView(rootURL: url, offlineItem: item)
             } else if ArchiveManager.canOpen(fileName: item.fileName) {
                 OfflineArchiveContentView(item: item, message: $message, working: $working)
             } else if EditorLanguage.isEditable(fileName: item.fileName) {
@@ -102,7 +102,10 @@ struct OfflineDetailView: View {
 }
 
 private struct OfflineFolderContentView: View {
+    @EnvironmentObject private var offline: OfflineStore
+
     let rootURL: URL
+    let offlineItem: OfflineItem
     @State private var entries: [OfflineFolderEntry] = []
     @State private var loading = true
     @State private var errorMessage: String?
@@ -114,12 +117,22 @@ private struct OfflineFolderContentView: View {
             } else {
                 List(entries) { entry in
                     if entry.isDirectory {
-                        OfflineFolderEntryRow(entry: entry)
+                        NavigationLink {
+                            OfflineFolderContentView(
+                                rootURL: entry.url,
+                                offlineItem: offlineItem
+                            )
+                            .navigationTitle(entry.name)
+                            .navigationBarTitleDisplayMode(.inline)
+                        } label: {
+                            OfflineFolderEntryRow(entry: entry)
+                        }
                     } else {
                         NavigationLink {
-                            QuickLookView(url: entry.url)
-                                .navigationTitle(entry.url.lastPathComponent)
-                                .navigationBarTitleDisplayMode(.inline)
+                            OfflineLocalFileDetailView(
+                                url: entry.url,
+                                offlineItem: offlineItem
+                            )
                         } label: {
                             OfflineFolderEntryRow(entry: entry)
                         }
@@ -142,25 +155,24 @@ private struct OfflineFolderContentView: View {
         do {
             let root = rootURL
             entries = try await Task.detached(priority: .userInitiated) {
-                guard let enumerator = FileManager.default.enumerator(
+                let urls = try FileManager.default.contentsOfDirectory(
                     at: root,
                     includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
-                    options: [.skipsHiddenFiles]
-                ) else { return [] }
+                    options: []
+                )
                 var result: [OfflineFolderEntry] = []
-                for case let url as URL in enumerator {
+                for url in urls {
                     let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-                    let relative = url.path.replacingOccurrences(of: root.path + "/", with: "")
                     result.append(OfflineFolderEntry(
                         url: url,
-                        relativePath: relative,
+                        name: url.lastPathComponent,
                         isDirectory: values.isDirectory == true,
                         size: values.isDirectory == true ? nil : values.fileSize.map(Int64.init)
                     ))
                 }
                 return result.sorted {
                     if $0.isDirectory != $1.isDirectory { return $0.isDirectory && !$1.isDirectory }
-                    return $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
+                    return $0.name.localizedStandardCompare($1.name) == .orderedAscending
                 }
             }.value
         } catch {
@@ -173,7 +185,7 @@ private struct OfflineFolderContentView: View {
 private struct OfflineFolderEntry: Identifiable, Sendable {
     var id: String { url.path }
     let url: URL
-    let relativePath: String
+    let name: String
     let isDirectory: Bool
     let size: Int64?
 }
@@ -185,13 +197,36 @@ private struct OfflineFolderEntryRow: View {
         HStack(spacing: 10) {
             Image(systemName: entry.isDirectory ? "folder.fill" : "doc.fill")
             VStack(alignment: .leading, spacing: 3) {
-                Text(entry.relativePath)
+                Text(entry.name)
                     .lineLimit(2)
                 if let size = entry.size {
                     Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+}
+
+private struct OfflineLocalFileDetailView: View {
+    @EnvironmentObject private var offline: OfflineStore
+
+    let url: URL
+    let offlineItem: OfflineItem
+
+    var body: some View {
+        Group {
+            if EditorLanguage.isEditable(fileName: url.lastPathComponent) {
+                LocalTextEditorView(
+                    url: url,
+                    fileName: url.lastPathComponent,
+                    onSaved: { offline.fileDidChange(offlineItem) }
+                )
+            } else {
+                QuickLookView(url: url)
+                    .navigationTitle(url.lastPathComponent)
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
     }

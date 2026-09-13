@@ -106,6 +106,24 @@ final class OfflineStore: ObservableObject {
     }
 
     func fileDidChange(_ item: OfflineItem) {
+        if item.directory {
+            let id = item.id
+            let directoryURL = localURL(for: item)
+            Task { [weak self] in
+                let size = await Task.detached(priority: .utility) {
+                    try? Self.localTreeSize(at: directoryURL)
+                }.value
+                guard let self,
+                      let index = self.items.firstIndex(where: { $0.id == id }) else { return }
+                self.items[index].size = size
+                try? FileManager.default.removeItem(
+                    at: self.exportRoot.appendingPathComponent(id.uuidString, isDirectory: true)
+                )
+                self.persist()
+            }
+            return
+        }
+
         guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
         let size = (try? localURL(for: item).resourceValues(forKeys: [.fileSizeKey]).fileSize)
             .map { Int64($0) }
@@ -140,7 +158,18 @@ final class OfflineStore: ObservableObject {
         let provider = try ProviderFactory.make(for: profile)
         try await provider.connect()
         do {
-            let target = RemotePath.join(RemotePath.normalize(profile.initialPath), item.fileName)
+            let parent = RemotePath.normalize(profile.initialPath)
+            let descriptor = RemoteItem(
+                name: item.fileName,
+                path: item.remotePath,
+                kind: item.directory ? .directory : .file,
+                size: item.size
+            )
+            let target = await RemoteFileOperations.availablePastePath(
+                for: descriptor,
+                in: parent,
+                provider: provider
+            )
             if item.directory {
                 try await uploadDirectory(
                     localDirectory: localURL(for: item),
@@ -282,7 +311,7 @@ final class OfflineStore: ObservableObject {
         let children = try FileManager.default.contentsOfDirectory(
             at: localDirectory,
             includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: []
         )
         for child in children {
             try Task.checkCancellation()
@@ -319,5 +348,22 @@ final class OfflineStore: ObservableObject {
             if values.isRegularFile == true { files.append(url) }
         }
         return files
+    }
+
+    private nonisolated static func localTreeSize(at root: URL) throws -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: []
+        ) else { return 0 }
+
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            if values.isRegularFile == true, let size = values.fileSize {
+                total += Int64(size)
+            }
+        }
+        return total
     }
 }

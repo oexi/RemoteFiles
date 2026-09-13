@@ -5,6 +5,20 @@ struct OfflineEditorView: View {
 
     let item: OfflineItem
 
+    var body: some View {
+        LocalTextEditorView(
+            url: offline.localURL(for: item),
+            fileName: item.fileName,
+            onSaved: { offline.fileDidChange(item) }
+        )
+    }
+}
+
+struct LocalTextEditorView: View {
+    let url: URL
+    let fileName: String
+    let onSaved: (() -> Void)?
+
     @State private var text = ""
     @State private var loading = true
     @State private var saving = false
@@ -14,9 +28,9 @@ struct OfflineEditorView: View {
     var body: some View {
         Group {
             if loading {
-                ProgressView("Loading \(item.fileName)…")
+                ProgressView("Loading \(fileName)…")
             } else if loadError == nil {
-                RunestoneEditor(text: $text, fileName: item.fileName)
+                RunestoneEditor(text: $text, fileName: fileName)
             } else {
                 ContentUnavailableView(
                     "Text preview unavailable",
@@ -25,7 +39,7 @@ struct OfflineEditorView: View {
                 )
             }
         }
-        .navigationTitle(item.fileName)
+        .navigationTitle(fileName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -46,7 +60,6 @@ struct OfflineEditorView: View {
 
     private func load() async {
         do {
-            let url = offline.localURL(for: item)
             let data = try Data(contentsOf: url)
             guard data.count <= 20 * 1024 * 1024 else {
                 throw RemoteProviderError.unsupported("Text files larger than 20 MB are not opened in the editor.")
@@ -65,8 +78,8 @@ struct OfflineEditorView: View {
         saving = true
         defer { saving = false }
         do {
-            try Data(text.utf8).write(to: offline.localURL(for: item), options: .atomic)
-            offline.fileDidChange(item)
+            try Data(text.utf8).write(to: url, options: .atomic)
+            onSaved?()
         } catch {
             saveError = error.localizedDescription
         }

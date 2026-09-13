@@ -43,30 +43,41 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
 
     func list(path: String) async throws -> [RemoteItem] {
         let sftp = try await client()
-        let responses = try await sftp.listDirectory(atPath: RemotePath.normalize(path))
-        return responses.flatMap(\.components).compactMap { component in
-            guard component.filename != ".", component.filename != ".." else { return nil }
-            let kind = Self.kind(from: component.attributes.permissions)
-            let size = component.attributes.size.map { Int64(clamping: $0) }
-            let modified = component.attributes.accessModificationTime?.modificationTime
-            return RemoteItem(
-                name: component.filename,
-                path: RemotePath.join(path, component.filename),
-                kind: kind,
-                size: kind == .directory ? nil : size,
-                modifiedAt: modified,
-                isHidden: component.filename.hasPrefix("."),
-                permissions: component.attributes.permissions.map { $0 & 0o7777 },
-                revision: .init(modifiedAt: modified, size: size)
-            )
-        }.sorted {
-            if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
-            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        let normalized = RemotePath.normalize(path)
+        do {
+            let responses = try await sftp.listDirectory(atPath: normalized)
+            return responses.flatMap(\.components).compactMap { component in
+                guard component.filename != ".", component.filename != ".." else { return nil }
+                let kind = Self.kind(from: component.attributes.permissions)
+                let size = component.attributes.size.map { Int64(clamping: $0) }
+                let modified = component.attributes.accessModificationTime?.modificationTime
+                return RemoteItem(
+                    name: component.filename,
+                    path: RemotePath.join(path, component.filename),
+                    kind: kind,
+                    size: kind == .directory ? nil : size,
+                    modifiedAt: modified,
+                    isHidden: component.filename.hasPrefix("."),
+                    permissions: component.attributes.permissions.map { $0 & 0o7777 },
+                    revision: .init(modifiedAt: modified, size: size)
+                )
+            }.sorted {
+                if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "list \(normalized)")
         }
     }
 
     func attributes(path: String) async throws -> RemoteItem {
-        let attributes = try await client().getAttributes(at: RemotePath.normalize(path))
+        let normalized = RemotePath.normalize(path)
+        let attributes: SFTPFileAttributes
+        do {
+            attributes = try await client().getAttributes(at: normalized)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "read attributes for \(normalized)")
+        }
         let name = (path as NSString).lastPathComponent
         let kind = Self.kind(from: attributes.permissions)
         let size = attributes.size.map { Int64(clamping: $0) }
@@ -294,20 +305,36 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
     }
 
     func createDirectory(path: String) async throws {
-        try await client().createDirectory(atPath: RemotePath.normalize(path))
+        let normalized = RemotePath.normalize(path)
+        do {
+            try await client().createDirectory(atPath: normalized)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "create directory \(normalized)")
+        }
     }
 
     func remove(path: String, isDirectory: Bool) async throws {
         let sftp = try await client()
-        if isDirectory { try await sftp.rmdir(at: RemotePath.normalize(path)) }
-        else { try await sftp.remove(at: RemotePath.normalize(path)) }
+        let normalized = RemotePath.normalize(path)
+        do {
+            if isDirectory { try await sftp.rmdir(at: normalized) }
+            else { try await sftp.remove(at: normalized) }
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "remove \(normalized)")
+        }
     }
 
     func move(from: String, to: String, overwrite: Bool) async throws {
         if !overwrite, (try? await attributes(path: to)) != nil {
             throw RemoteProviderError.conflict("An item already exists at \(to).")
         }
-        try await client().rename(at: RemotePath.normalize(from), to: RemotePath.normalize(to))
+        let source = RemotePath.normalize(from)
+        let destination = RemotePath.normalize(to)
+        do {
+            try await client().rename(at: source, to: destination)
+        } catch {
+            throw Self.normalizedSFTPError(error, operation: "rename \(source) to \(destination)")
+        }
     }
 
     private func client() async throws -> SFTPClient {
