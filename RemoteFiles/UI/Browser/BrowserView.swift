@@ -563,8 +563,11 @@ private struct FileRow: View {
                         .scaledToFill()
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {
-                    Image(systemName: item.isDirectory ? "folder.fill" : iconName)
-                        .font(.title3)
+                    WhiteSurFileIconView(
+                        fileName: item.name,
+                        isDirectory: item.isDirectory,
+                        size: 36
+                    )
                 }
             }
             .frame(width: 36, height: 36)
@@ -601,15 +604,6 @@ private struct FileRow: View {
         }
     }
 
-    private var iconName: String {
-        let ext = (item.name as NSString).pathExtension.lowercased()
-        if ArchiveManager.canOpen(fileName: item.name) { return "archivebox.fill" }
-        if EditorLanguage.isEditable(fileName: item.name) { return "doc.text.fill" }
-        if ["jpg", "jpeg", "png", "gif", "heic", "webp"].contains(ext) { return "photo.fill" }
-        if ["mp4", "mov", "m4v", "mkv"].contains(ext) { return "film.fill" }
-        if ext == "pdf" { return "doc.richtext.fill" }
-        return "doc.fill"
-    }
 }
 
 private struct RemoteItemPropertiesView: View {
@@ -619,8 +613,6 @@ private struct RemoteItemPropertiesView: View {
     let item: RemoteItem
 
     @State private var resolvedSize: Int64?
-    @State private var skippedItemCount = 0
-    @State private var calculatingSize = false
     @State private var errorMessage: String?
 
     var body: some View {
@@ -628,25 +620,19 @@ private struct RemoteItemPropertiesView: View {
             List {
                 Section("General") {
                     LabeledContent("Name", value: item.name)
-                    LabeledContent("Type", value: item.isDirectory ? "Folder" : "File")
-                    LabeledContent("Path", value: item.path)
-                    LabeledContent("Size") {
-                        if let size = resolvedSize ?? (!item.isDirectory ? item.size : nil) {
-                            Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-                        } else if calculatingSize {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.small)
-                                Text("Calculating…")
-                            }
-                        } else {
-                            Text("Unavailable")
-                                .foregroundStyle(.secondary)
-                        }
+                    LabeledContent("Type") {
+                        Text(item.isDirectory ? LocalizedStringKey("Folder") : LocalizedStringKey("File"))
                     }
-                    if item.isDirectory, skippedItemCount > 0 {
-                        Text("Skipped \(skippedItemCount) inaccessible item(s) while calculating.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    LabeledContent("Path", value: item.path)
+                    if !item.isDirectory {
+                        LabeledContent("Size") {
+                            if let size = resolvedSize ?? item.size {
+                                Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                            } else {
+                                Text("Unavailable")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     if let errorMessage {
                         Text(errorMessage)
@@ -687,20 +673,10 @@ private struct RemoteItemPropertiesView: View {
     }
 
     private func loadSize() async {
-        calculatingSize = true
-        defer { calculatingSize = false }
+        guard !item.isDirectory, item.size == nil else { return }
         do {
-            if item.isDirectory {
-                let result = try await RemoteDirectorySizeCalculator.calculate(
-                    path: item.path,
-                    provider: provider
-                )
-                resolvedSize = result.bytes
-                skippedItemCount = result.skippedItemCount
-            } else if item.size == nil {
-                let attributes = try await provider.attributes(path: item.path)
-                resolvedSize = attributes.size
-            }
+            let attributes = try await provider.attributes(path: item.path)
+            resolvedSize = attributes.size
         } catch is CancellationError {
             return
         } catch {

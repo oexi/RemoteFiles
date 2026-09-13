@@ -10,7 +10,11 @@ struct OfflineListView: View {
                     OfflineDetailView(item: item)
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: item.directory ? "folder.fill" : "doc.fill")
+                        WhiteSurFileIconView(
+                            fileName: item.fileName,
+                            isDirectory: item.directory,
+                            size: 36
+                        )
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.fileName).lineLimit(1)
                             HStack {

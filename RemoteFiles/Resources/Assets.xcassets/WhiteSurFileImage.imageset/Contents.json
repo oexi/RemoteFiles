@@ -1,0 +1,8 @@
+{
+  "images" : [
+    { "filename" : "WhiteSurFileImage.png", "idiom" : "universal", "scale" : "1x" },
+    { "filename" : "WhiteSurFileImage@2x.png", "idiom" : "universal", "scale" : "2x" },
+    { "filename" : "WhiteSurFileImage@3x.png", "idiom" : "universal", "scale" : "3x" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}

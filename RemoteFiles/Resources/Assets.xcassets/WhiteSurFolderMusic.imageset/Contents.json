@@ -1,0 +1,8 @@
+{
+  "images" : [
+    { "filename" : "WhiteSurFolderMusic.png", "idiom" : "universal", "scale" : "1x" },
+    { "filename" : "WhiteSurFolderMusic@2x.png", "idiom" : "universal", "scale" : "2x" },
+    { "filename" : "WhiteSurFolderMusic@3x.png", "idiom" : "universal", "scale" : "3x" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}

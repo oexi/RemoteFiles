@@ -195,7 +195,11 @@ private struct OfflineFolderEntryRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: entry.isDirectory ? "folder.fill" : "doc.fill")
+            WhiteSurFileIconView(
+                fileName: entry.url.lastPathComponent,
+                isDirectory: entry.isDirectory,
+                size: 34
+            )
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.name)
                     .lineLimit(2)
@@ -248,7 +252,11 @@ private struct OfflineArchiveContentView: View {
             } else {
                 List(entries) { entry in
                     HStack {
-                        Image(systemName: entry.kind == .directory ? "folder" : "doc")
+                        WhiteSurFileIconView(
+                            fileName: (entry.path as NSString).lastPathComponent,
+                            isDirectory: entry.kind == .directory,
+                            size: 30
+                        )
                         VStack(alignment: .leading, spacing: 3) {
                             Text(entry.path)
                             if entry.kind == .file {

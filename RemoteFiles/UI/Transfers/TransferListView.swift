@@ -17,7 +17,7 @@ struct TransferListView: View {
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
-                        Text(record.state.rawValue.capitalized).font(.caption).foregroundStyle(.secondary)
+                        Text(stateTitle(for: record.state)).font(.caption).foregroundStyle(.secondary)
                     }
                     ProgressView(value: record.progress)
                     if let transferred = record.transferredBytes,
@@ -98,7 +98,17 @@ struct TransferListView: View {
         }
     }
 
-    private func operationTitle(for record: TransferRecord) -> String {
+    private func stateTitle(for state: TransferState) -> LocalizedStringKey {
+        switch state {
+        case .queued: "Queued"
+        case .running: "Running"
+        case .completed: "Completed"
+        case .failed: "Failed"
+        case .cancelled: "Cancelled"
+        }
+    }
+
+    private func operationTitle(for record: TransferRecord) -> LocalizedStringKey {
         switch record.operationKind {
         case .serverToServer: "Server to Server"
         case .upload: "Upload"
