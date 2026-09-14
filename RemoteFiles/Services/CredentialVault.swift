@@ -24,11 +24,52 @@ struct Credential: Sendable {
 }
 
 final class CredentialVault: @unchecked Sendable {
+    struct KeychainOperations {
+        let update: (_ query: [String: Any], _ attributes: [String: Any]) -> OSStatus
+        let add: (_ query: [String: Any]) -> OSStatus
+        let copyMatching: (_ query: [String: Any]) -> (status: OSStatus, data: Data?)
+        let delete: (_ query: [String: Any]) -> OSStatus
+
+        init(
+            update: @escaping (_ query: [String: Any], _ attributes: [String: Any]) -> OSStatus,
+            add: @escaping (_ query: [String: Any]) -> OSStatus,
+            copyMatching: @escaping (_ query: [String: Any]) -> (status: OSStatus, data: Data?),
+            delete: @escaping (_ query: [String: Any]) -> OSStatus
+        ) {
+            self.update = update
+            self.add = add
+            self.copyMatching = copyMatching
+            self.delete = delete
+        }
+
+        static let live = Self(
+            update: { query, attributes in
+                SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+            },
+            add: { query in
+                SecItemAdd(query as CFDictionary, nil)
+            },
+            copyMatching: { query in
+                var result: CFTypeRef?
+                let status = SecItemCopyMatching(query as CFDictionary, &result)
+                return (status, result as? Data)
+            },
+            delete: { query in
+                SecItemDelete(query as CFDictionary)
+            }
+        )
+    }
+
     static let shared = CredentialVault()
     private let service: String
+    private let keychain: KeychainOperations
 
-    init(service: String = "com.oexi.RemoteFiles.credentials") {
+    init(
+        service: String = "com.oexi.RemoteFiles.credentials",
+        keychain: KeychainOperations = .live
+    ) {
         self.service = service
+        self.keychain = keychain
     }
 
     func save(_ credential: Credential, for profileID: UUID) throws {
@@ -46,7 +87,7 @@ final class CredentialVault: @unchecked Sendable {
             kSecAttrAccount as String: account
         ]
         let attributes: [String: Any] = [kSecValueData as String: payload]
-        let updateStatus = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
+        let updateStatus = keychain.update(base, attributes)
         if updateStatus == errSecSuccess {
             return
         }
@@ -57,7 +98,7 @@ final class CredentialVault: @unchecked Sendable {
         var addQuery = base
         addQuery[kSecValueData as String] = payload
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        let addStatus = keychain.add(addQuery)
         if addStatus == errSecSuccess {
             return
         }
@@ -67,7 +108,7 @@ final class CredentialVault: @unchecked Sendable {
         guard addStatus == errSecDuplicateItem else {
             throw VaultError.status(addStatus)
         }
-        let retryStatus = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
+        let retryStatus = keychain.update(base, attributes)
         guard retryStatus == errSecSuccess else {
             throw VaultError.status(retryStatus)
         }
@@ -81,10 +122,10 @@ final class CredentialVault: @unchecked Sendable {
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        let result = keychain.copyMatching(query)
+        let status = result.status
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else { throw VaultError.status(status) }
+        guard status == errSecSuccess, let data = result.data else { throw VaultError.status(status) }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
         return Credential(
             username: payload.username,
@@ -101,7 +142,7 @@ final class CredentialVault: @unchecked Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: profileID.uuidString
         ]
-        SecItemDelete(query as CFDictionary)
+        keychain.delete(query)
     }
 
     private struct Payload: Codable {
