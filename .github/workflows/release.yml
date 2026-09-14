@@ -13,10 +13,16 @@ jobs:
   build-release:
     runs-on: macos-26
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+      description: ${{ steps.version.outputs.description }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Select and verify Xcode 26
         run: |
@@ -39,8 +45,28 @@ jobs:
           set -euo pipefail
           VERSION="$(awk '/MARKETING_VERSION:/ {print $2; exit}' project.yml)"
           BUILD="$(awk '/CURRENT_PROJECT_VERSION:/ {print $2; exit}' project.yml)"
+          PREVIOUS_TAG="$(git describe --tags --abbrev=0 "$GITHUB_SHA^" 2>/dev/null || true)"
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            RELEASE_RANGE="$PREVIOUS_TAG..$GITHUB_SHA"
+          else
+            RELEASE_RANGE="$GITHUB_SHA"
+          fi
+          DESCRIPTION="$(git log --no-merges --format=%s -n 3 "$RELEASE_RANGE" -- \
+            . \
+            ':(exclude).github' \
+            ':(exclude)project.yml' \
+            ':(exclude)altstore.json' \
+            ':(exclude)AGENTS.md' \
+            | sed '/^[[:space:]]*$/d' \
+            | paste -sd ';' - \
+            | sed 's/;/; /g')"
+          if [[ -z "$DESCRIPTION" ]]; then
+            DESCRIPTION="Maintenance updates."
+          fi
+          test -n "$DESCRIPTION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "description=$DESCRIPTION" >> "$GITHUB_OUTPUT"
           if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
             echo "Tag $GITHUB_REF_NAME does not match MARKETING_VERSION $VERSION" >&2
             exit 1
@@ -113,16 +139,20 @@ jobs:
 
       - name: Prepare release notes
         if: github.ref_type == 'tag'
+        env:
+          RELEASE_DESCRIPTION: ${{ steps.version.outputs.description }}
         run: |
-          cat > release-notes.md <<'EOF'
-          ## RemoteFiles ${{ github.ref_name }}
-
+          {
+            printf '## RemoteFiles %s\n\n' "$GITHUB_REF_NAME"
+            printf '%s\n\n' "$RELEASE_DESCRIPTION"
+            cat <<'EOF'
           This release contains the iPhone/iPad application and its File Provider extension.
 
           The attached `*-unsigned.ipa` is intentionally unsigned because this repository does not contain Apple signing credentials. It can be downloaded and re-signed by a sideloading/signing tool. A directly installable signed IPA requires matching Apple Developer certificates and provisioning profiles for both the app and the File Provider extension.
 
           A SHA-256 checksum is attached next to the IPA.
           EOF
+          } > release-notes.md
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
@@ -145,7 +175,8 @@ jobs:
               --clobber
             gh release edit "$GITHUB_REF_NAME" \
               --title "RemoteFiles $GITHUB_REF_NAME" \
-              --notes-file release-notes.md
+              --notes-file release-notes.md \
+              --draft=false
           else
             gh release create "$GITHUB_REF_NAME" \
               "${{ steps.package.outputs.ipa }}" \
@@ -153,3 +184,89 @@ jobs:
               --title "RemoteFiles $GITHUB_REF_NAME" \
               --notes-file release-notes.md
           fi
+
+  update-altstore:
+    name: Update AltStore source
+    needs: build-release
+    if: ${{ needs.build-release.result == 'success' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: altstore-main
+      cancel-in-progress: false
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Checkout release updater
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: release-source
+          fetch-depth: 1
+
+      - name: Update AltStore metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.build-release.outputs.version }}
+          RELEASE_BUILD: ${{ needs.build-release.outputs.build }}
+          RELEASE_DESCRIPTION: ${{ needs.build-release.outputs.description }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_TAG" = "v$RELEASE_VERSION"
+          IPA_NAME="RemoteFiles-${RELEASE_VERSION}-build${RELEASE_BUILD}-unsigned.ipa"
+          RELEASE_JSON="$(gh api \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/$REPOSITORY/releases/tags/$RELEASE_TAG")"
+          ASSET_JSON="$(jq -e --arg name "$IPA_NAME" \
+            '[.assets[] | select(.name == $name)] |
+             if length == 1 then .[0] else error("expected exactly one IPA asset") end' \
+            <<<"$RELEASE_JSON")"
+          IPA_URL="$(jq -er '.browser_download_url' <<<"$ASSET_JSON")"
+          IPA_SIZE="$(jq -er '.size' <<<"$ASSET_JSON")"
+          RELEASE_DATE="$(jq -er '.published_at // empty' <<<"$RELEASE_JSON")"
+          [[ "$IPA_URL" == "https://github.com/$REPOSITORY/releases/download/$RELEASE_TAG/"* ]]
+          if ! [[ "$IPA_SIZE" =~ ^[0-9]+$ ]] || (( IPA_SIZE <= 0 )); then
+            echo "GitHub release asset has an invalid size: $IPA_SIZE" >&2
+            exit 1
+          fi
+          test -n "$RELEASE_DATE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            if (( attempt > 1 )); then
+              git fetch origin main
+              git switch --detach origin/main
+            fi
+            python3 release-source/.github/scripts/update_altstore.py \
+              --path altstore.json \
+              --version "$RELEASE_VERSION" \
+              --build "$RELEASE_BUILD" \
+              --date "$RELEASE_DATE" \
+              --description "$RELEASE_DESCRIPTION" \
+              --download-url "$IPA_URL" \
+              --size "$IPA_SIZE"
+
+            if git diff --quiet -- altstore.json; then
+              echo "altstore.json already contains or supersedes $RELEASE_VERSION build $RELEASE_BUILD"
+              exit 0
+            fi
+
+            git add altstore.json
+            git commit -m "Update AltStore metadata for $RELEASE_TAG"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "main advanced during AltStore update (attempt $attempt/3)" >&2
+          done
+          echo "Could not update altstore.json after three attempts" >&2
+          exit 1
