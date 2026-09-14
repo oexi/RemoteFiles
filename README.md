@@ -30,3 +30,20 @@ RemoteFiles 是一款面向 iPhone 和 iPad 的多协议远程文件管理器，
 - 可通过系统“文件”App 的 File Provider 集成访问已配置的远程连接，并支持浏览、下载、新建、修改、移动和删除。
 - 针对 iPhone 和 iPad 提供原生 SwiftUI 文件管理界面。
 - 兼容 iOS 26 / iPadOS 26。
+
+## SideStore / LiveContainer 订阅源
+
+在 SideStore 或支持 AltSource 的 LiveContainer 中添加以下源地址：
+
+```text
+https://raw.githubusercontent.com/oexi/RemoteFiles/main/altstore.json
+```
+
+也可以使用对应应用的 URL Scheme：
+
+```text
+sidestore://source?url=https%3A%2F%2Fraw.githubusercontent.com%2Foexi%2FRemoteFiles%2Fmain%2Faltstore.json
+livecontainer://sources?url=https%3A%2F%2Fraw.githubusercontent.com%2Foexi%2FRemoteFiles%2Fmain%2Faltstore.json
+```
+
+源中提供的 IPA 未签名。SideStore 会在安装时签名；LiveContainer 则依所用的签名或 JIT 模式运行。若要作为普通 App 直接安装，需要先重签。LiveContainer 不会将访客应用的 File Provider 扩展注册到系统“文件”App；需要该功能时请独立安装 RemoteFiles。

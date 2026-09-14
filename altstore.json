@@ -1,0 +1,39 @@
+{
+  "name": "RemoteFiles",
+  "identifier": "com.oexi.RemoteFiles.source",
+  "sourceURL": "https://raw.githubusercontent.com/oexi/RemoteFiles/main/altstore.json",
+  "apps": [
+    {
+      "name": "RemoteFiles",
+      "bundleIdentifier": "com.oexi.RemoteFiles",
+      "developerName": "oexi",
+      "subtitle": "FTP, FTPS, SFTP, SMB, WebDAV and NFS file manager",
+      "localizedDescription": "Browse and manage remote files on iPhone and iPad. RemoteFiles supports offline files, cross-server transfers, text editing, archive extraction and integration with the iOS Files app.",
+      "iconURL": "https://raw.githubusercontent.com/oexi/RemoteFiles/main/RemoteFiles/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "version": "0.3.10",
+      "versionDate": "2026-09-14T02:10:33Z",
+      "versionDescription": "Safer offline refresh and archive extraction, File Provider path isolation, WebDAV initial-directory fix and improved Chinese localization.",
+      "downloadURL": "https://github.com/oexi/RemoteFiles/releases/download/v0.3.10/RemoteFiles-0.3.10-build19-unsigned.ipa",
+      "size": 30461372,
+      "versions": [
+        {
+          "version": "0.3.10",
+          "buildVersion": "19",
+          "date": "2026-09-14T02:10:33Z",
+          "localizedDescription": "Safer offline refresh and archive extraction, File Provider path isolation, WebDAV initial-directory fix and improved Chinese localization.",
+          "downloadURL": "https://github.com/oexi/RemoteFiles/releases/download/v0.3.10/RemoteFiles-0.3.10-build19-unsigned.ipa",
+          "size": 30461372,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [
+          "com.apple.security.application-groups",
+          "keychain-access-groups"
+        ],
+        "privacy": {}
+      }
+    }
+  ],
+  "news": []
+}
