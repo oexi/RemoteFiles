@@ -15,6 +15,9 @@ struct RunestoneEditor: UIViewRepresentable {
     func makeUIView(context: Context) -> TextView {
         let view = TextView()
         view.editorDelegate = context.coordinator
+        // Runestone initializes its surface to `.white`, while its default theme
+        // uses dynamic foreground colors. Match the surface to the host appearance.
+        view.backgroundColor = .systemBackground
         view.showLineNumbers = true
         view.alwaysBounceVertical = true
         view.autocorrectionType = .no
@@ -56,4 +59,3 @@ struct RunestoneEditor: UIViewRepresentable {
         }
     }
 }
-

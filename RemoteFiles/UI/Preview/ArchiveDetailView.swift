@@ -16,8 +16,12 @@ struct ArchiveDetailView: View {
             } else {
                 List(entries) { entry in
                     HStack {
-                        Image(systemName: entry.kind == .directory ? "folder" : "doc")
-                        VStack(alignment: .leading) {
+                        WhiteSurFileIconView(
+                            fileName: (entry.path as NSString).lastPathComponent,
+                            isDirectory: entry.kind == .directory,
+                            size: 30
+                        )
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(entry.path)
                             if entry.kind == .file {
                                 Text(ByteCountFormatter.string(fromByteCount: Int64(entry.uncompressedSize), countStyle: .file))
