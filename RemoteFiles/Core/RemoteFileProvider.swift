@@ -62,6 +62,14 @@ protocol RemoteChunkWritableProvider: Sendable {
     func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64
     func writeChunk(path: String, data: Data, offset: UInt64) async throws
     func finishChunkedUpload(path: String) async throws
+    /// Close provider-owned resources for an interrupted chunked upload.
+    ///
+    /// Providers may keep the destination partial file so a later transfer can
+    /// safely resume from its confirmed prefix. This hook is deliberately
+    /// separate from `RemoteChunkWriteSession.abort()`: providers that use the
+    /// legacy `writeChunk` path still need a chance to release their remote
+    /// file handle when setup succeeded but the transfer did not finish.
+    func abortChunkedUpload(path: String) async
     func openWriteSession(
         path: String,
         overwrite: Bool,
@@ -71,6 +79,8 @@ protocol RemoteChunkWritableProvider: Sendable {
 
 extension RemoteChunkWritableProvider {
     func finishChunkedUpload(path: String) async throws { }
+
+    func abortChunkedUpload(path: String) async { }
 
     func openWriteSession(
         path: String,

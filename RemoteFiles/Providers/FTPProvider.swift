@@ -1,7 +1,7 @@
 import FilesProvider
 import Foundation
 
-final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
+final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, RemoteChunkReadSupportProbing, @unchecked Sendable {
     let profile: ConnectionProfile
     var capabilities: ProviderCapabilities {
         var values: Set<ProviderCapability> = [.list, .read, .write, .createDirectory, .delete, .move, .copy, .resume]
@@ -39,6 +39,10 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
         guard let provider = FTPFileProvider(baseURL: baseURL, mode: .passive, credential: urlCredential) else {
             throw RemoteProviderError.invalidConfiguration("Unable to initialize the FTP client.")
         }
+        // FilesProvider's serial STOR path is its fastest and most reliable
+        // upload mode. REST mode reconnects for every optimized chunk, which
+        // is especially costly on high-latency FTP/FTPS servers.
+        provider.uploadByREST = false
         self.provider = provider
     }
 
@@ -134,6 +138,14 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
                 else { continuation.resume(returning: data ?? Data()) }
             }
         }
+    }
+
+    func supportsChunkedReads(path: String) async throws -> Bool {
+        // FTPFileProvider.contents(path:offset:length:) creates a new control
+        // and passive data connection for every range. Returning false makes
+        // TransferEngine use the provider's one-connection download path,
+        // avoiding a login/data-channel handshake for every engine range.
+        false
     }
 
     func createDirectory(path: String) async throws {
@@ -242,4 +254,3 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
         return mode
     }
 }
-

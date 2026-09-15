@@ -7,6 +7,16 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
     let profile: ConnectionProfile
     let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .permissions, .symbolicLinks])
 
+    // Citadel's SFTPFile.write() currently splits writes into 32,000-byte
+    // requests and waits for each response before sending the next one. Keep
+    // requests at that boundary and pipeline a bounded number of them so a
+    // high-latency connection can keep its SSH/SFTP window full. The same
+    // request size is used for reads because SFTP servers commonly cap a READ
+    // response to roughly the same payload size.
+    static let sftpRequestSize = 32_000
+    static let maxInFlightRequests = 16
+    private static let transferBufferSize = 1_048_576
+
     private let credential: Credential?
     private var ssh: SSHClient?
     private var sftp: SFTPClient?
@@ -126,28 +136,12 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             throw Self.normalizedSFTPError(error, operation: "open \(normalized) for reading")
         }
         do {
-            var offset: UInt64 = 0
-            if let expectedSize {
-                while offset < expectedSize {
-                    let remaining = expectedSize - offset
-                    let requestLength = UInt32(min(UInt64(1_048_576), remaining))
-                    let buffer = try await file.read(from: offset, length: requestLength)
-                    let count = buffer.readableBytes
-                    guard count > 0 else {
-                        throw RemoteProviderError.invalidResponse("The SFTP server ended the file before the advertised size was reached.")
-                    }
-                    try output.write(contentsOf: Data(buffer.readableBytesView))
-                    offset += UInt64(count)
-                }
-            } else {
-                while true {
-                    let buffer = try await file.read(from: offset, length: 1_048_576)
-                    let count = buffer.readableBytes
-                    if count == 0 { break }
-                    try output.write(contentsOf: Data(buffer.readableBytesView))
-                    offset += UInt64(count)
-                }
-            }
+            try await Self.copyPipelined(
+                file: file,
+                expectedSize: expectedSize,
+                to: output,
+                path: normalized
+            )
 
             // Embedded SFTP servers can return a non-OK status for CLOSE even when every
             // requested byte was transferred successfully. A completed download should not
@@ -181,10 +175,14 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
 
         do {
             var offset: UInt64 = 0
-            while let data = try input.read(upToCount: 1_048_576), !data.isEmpty {
-                var buffer = ByteBufferAllocator().buffer(capacity: data.count)
-                buffer.writeBytes(data)
-                try await file.write(buffer, at: offset)
+            while let data = try input.read(upToCount: Self.transferBufferSize), !data.isEmpty {
+                try await Self.writePipelined(
+                    file: file,
+                    client: sftp,
+                    path: normalized,
+                    data: data,
+                    at: offset
+                )
                 offset += UInt64(data.count)
             }
 
@@ -198,6 +196,10 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
                 }
                 throw error
             }
+        } catch let recovery as SFTPWriteRecoveryError {
+            try? await file.close()
+            try? await sftp.remove(at: normalized)
+            throw recovery
         } catch {
             try? await file.close()
             throw Self.normalizedSFTPError(error, operation: "upload \(normalized)")
@@ -214,9 +216,15 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             throw Self.normalizedSFTPError(error, operation: "open \(normalized) for reading")
         }
         do {
-            let buffer = try await file.read(from: offset, length: UInt32(clamping: length))
+            let requestedLength = max(0, length)
+            let buffer = try await Self.readPipelined(
+                file: file,
+                offset: offset,
+                length: requestedLength,
+                path: normalized
+            )
             try? await file.close()
-            return Data(buffer.readableBytesView)
+            return buffer
         } catch {
             try? await file.close()
             throw Self.normalizedSFTPError(error, operation: "read \(normalized)")
@@ -271,7 +279,7 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         do {
             let file = try await sftp.openFile(filePath: normalized, flags: flags)
             return (
-                session: SFTPWriteSession(file: file, path: normalized),
+                session: SFTPWriteSession(file: file, client: sftp, path: normalized),
                 offset: safeResumeOffset
             )
         } catch {
@@ -289,15 +297,23 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             throw Self.normalizedSFTPError(error, operation: "open \(normalized) for chunk write")
         }
         do {
-            var buffer = ByteBufferAllocator().buffer(capacity: data.count)
-            buffer.writeBytes(data)
-            try await file.write(buffer, at: offset)
+            try await Self.writePipelined(
+                file: file,
+                client: sftp,
+                path: normalized,
+                data: data,
+                at: offset
+            )
             do {
                 try await file.close()
             } catch let status as SFTPMessage.Status where status.errorCode == .eof {
                 // Some SFTP servers report EOF while closing a successfully-written handle.
                 // The transfer engine verifies the final destination size afterwards.
             }
+        } catch let recovery as SFTPWriteRecoveryError {
+            try? await file.close()
+            try? await sftp.remove(at: normalized)
+            throw recovery
         } catch {
             try? await file.close()
             throw Self.normalizedSFTPError(error, operation: "write \(normalized)")
@@ -379,6 +395,312 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         }
     }
 
+    private struct SFTPReadResult: Sendable {
+        let index: Int
+        let requestedLength: Int
+        let data: Data
+    }
+
+    enum ReadBatchDisposition: Equatable {
+        case continueBatch
+        case restartBatch
+        case endOfFile
+        case finished
+    }
+
+    static func consumeReadResponse(
+        data: Data,
+        requestedLength: Int,
+        into result: inout Data,
+        currentOffset: inout UInt64,
+        remaining: inout Int
+    ) throws -> ReadBatchDisposition {
+        guard data.count <= requestedLength else {
+            throw RemoteProviderError.invalidResponse("The SFTP server returned more data than requested.")
+        }
+        guard data.isEmpty == false else { return .endOfFile }
+        guard data.count <= remaining else {
+            throw RemoteProviderError.invalidResponse("The SFTP read response exceeded the requested range.")
+        }
+        result.append(data)
+        currentOffset += UInt64(data.count)
+        remaining -= data.count
+        if remaining == 0 { return .finished }
+        return data.count < requestedLength ? .restartBatch : .continueBatch
+    }
+
+    // SFTPFile is not marked Sendable by Citadel, but its operations are
+    // request/response based and SFTPClient deliberately supports multiple
+    // request IDs in flight on the same channel. The provider owns the file
+    // handle for the duration of each bounded task group and never closes it
+    // until all children have completed.
+    private final class ConcurrentFile: @unchecked Sendable {
+        let file: SFTPFile
+
+        init(file: SFTPFile) {
+            self.file = file
+        }
+    }
+
+    private static func copyPipelined(
+        file: SFTPFile,
+        expectedSize: UInt64?,
+        to output: FileHandle,
+        path: String
+    ) async throws {
+        var offset: UInt64 = 0
+        while true {
+            try Task.checkCancellation()
+            let requestLength: Int
+            if let expectedSize {
+                guard offset < expectedSize else { return }
+                requestLength = Int(min(UInt64(transferBufferSize), expectedSize - offset))
+            } else {
+                requestLength = transferBufferSize
+            }
+
+            let data = try await readPipelined(
+                file: file,
+                offset: offset,
+                length: requestLength,
+                path: path
+            )
+            if data.isEmpty {
+                if expectedSize != nil {
+                    throw RemoteProviderError.invalidResponse(
+                        "The SFTP server ended the file before the advertised size was reached."
+                    )
+                }
+                return
+            }
+            try output.write(contentsOf: data)
+            offset += UInt64(data.count)
+
+            if let expectedSize, offset > expectedSize {
+                throw RemoteProviderError.invalidResponse(
+                    "The SFTP server returned more data than the advertised file size."
+                )
+            }
+        }
+    }
+
+    private static func readPipelined(
+        file: SFTPFile,
+        offset: UInt64,
+        length: Int,
+        path: String
+    ) async throws -> Data {
+        guard length >= 0 else {
+            throw RemoteProviderError.invalidConfiguration("The SFTP read length cannot be negative.")
+        }
+        guard length > 0 else { return Data() }
+        guard UInt64(length) <= UInt64.max - offset else {
+            throw RemoteProviderError.invalidConfiguration("The SFTP read offset overflows the file range.")
+        }
+
+        let concurrentFile = ConcurrentFile(file: file)
+        var result = Data()
+        result.reserveCapacity(length)
+        var currentOffset = offset
+        var remaining = length
+
+        while remaining > 0 {
+            try Task.checkCancellation()
+            let requestCount = min(
+                maxInFlightRequests,
+                ((remaining - 1) / sftpRequestSize) + 1
+            )
+            var requestLengths: [Int] = []
+            requestLengths.reserveCapacity(requestCount)
+            var batchRemaining = remaining
+            for _ in 0..<requestCount {
+                let requestLength = min(sftpRequestSize, batchRemaining)
+                requestLengths.append(requestLength)
+                batchRemaining -= requestLength
+            }
+
+            let batch = try await readBatch(
+                file: concurrentFile,
+                offset: currentOffset,
+                requestLengths: requestLengths,
+                path: path
+            )
+            var restartBatch = false
+            for response in batch {
+                switch try consumeReadResponse(
+                    data: response.data,
+                    requestedLength: response.requestedLength,
+                    into: &result,
+                    currentOffset: &currentOffset,
+                    remaining: &remaining
+                ) {
+                case .endOfFile:
+                    return result
+                case .restartBatch:
+                    // A short response is legal at EOF and is also permitted
+                    // by SFTP implementations that cap READ payloads. Discard
+                    // later speculative responses and retry from the exact
+                    // byte reached so no gap can enter the output.
+                    restartBatch = true
+                case .finished:
+                    break
+                case .continueBatch:
+                    continue
+                }
+                break
+            }
+            if restartBatch { continue }
+            if batch.count != requestLengths.count {
+                return result
+            }
+        }
+        return result
+    }
+
+    private static func readBatch(
+        file: ConcurrentFile,
+        offset: UInt64,
+        requestLengths: [Int],
+        path: String
+    ) async throws -> [SFTPReadResult] {
+        let groupResult = try await withThrowingTaskGroup(of: SFTPReadResult.self) { group in
+            for (index, requestLength) in requestLengths.enumerated() {
+                let requestOffset = offset + UInt64(index * sftpRequestSize)
+                group.addTask {
+                    try Task.checkCancellation()
+                    let buffer = try await file.file.read(
+                        from: requestOffset,
+                        length: UInt32(requestLength)
+                    )
+                    return SFTPReadResult(
+                        index: index,
+                        requestedLength: requestLength,
+                        data: Data(buffer.readableBytesView)
+                    )
+                }
+            }
+
+            var results = Array<SFTPReadResult?>(repeating: nil, count: requestLengths.count)
+            do {
+                while let result = try await group.next() {
+                    results[result.index] = result
+                }
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+            return results.compactMap { $0 }
+        }
+        guard groupResult.count == requestLengths.count else {
+            throw RemoteProviderError.invalidResponse(
+                "The SFTP read pipeline returned an incomplete batch for \(path)."
+            )
+        }
+        return groupResult.sorted { $0.index < $1.index }
+    }
+
+    private struct SFTPWriteRecoveryError: LocalizedError {
+        let path: String
+        let original: Error
+        let rollback: Error
+        let cleanup: Error
+
+        var errorDescription: String? {
+            "SFTP write failed and the partial file could not be made safe for resume at \(path). Original error: \(original.localizedDescription). Rollback error: \(rollback.localizedDescription). Cleanup error: \(cleanup.localizedDescription)."
+        }
+    }
+
+    private static func truncate(
+        file: SFTPFile,
+        to offset: UInt64
+    ) async throws {
+        var attributes = SFTPFileAttributes()
+        attributes.size = offset
+        try await file.setAttributes(to: attributes)
+    }
+
+    static func writeBatchOffset(baseOffset: UInt64, batchStart: Int) -> UInt64? {
+        guard batchStart >= 0 else { return nil }
+        let relativeOffset = UInt64(batchStart)
+        guard relativeOffset <= UInt64.max - baseOffset else { return nil }
+        return baseOffset + relativeOffset
+    }
+
+    private static func writePipelined(
+        file: SFTPFile,
+        client: SFTPClient,
+        path: String,
+        data: Data,
+        at offset: UInt64
+    ) async throws {
+        guard data.isEmpty == false else { return }
+        guard UInt64(data.count) <= UInt64.max - offset else {
+            throw RemoteProviderError.invalidConfiguration("The SFTP write offset overflows the file range.")
+        }
+
+        let concurrentFile = ConcurrentFile(file: file)
+        var batchStart = 0
+        let batchSize = sftpRequestSize * maxInFlightRequests
+        while batchStart < data.count {
+            try Task.checkCancellation()
+            let batchEnd = min(data.count, batchStart + batchSize)
+            guard let batchOffset = Self.writeBatchOffset(
+                baseOffset: offset,
+                batchStart: batchStart
+            ) else {
+                throw RemoteProviderError.invalidConfiguration("The SFTP write batch offset overflows the file range.")
+            }
+            do {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    var chunkStart = batchStart
+                    while chunkStart < batchEnd {
+                        let chunkEnd = min(data.count, chunkStart + sftpRequestSize)
+                        let chunk = data.subdata(in: chunkStart..<chunkEnd)
+                        let chunkOffset = offset + UInt64(chunkStart)
+                        group.addTask {
+                            try Task.checkCancellation()
+                            var buffer = ByteBufferAllocator().buffer(capacity: chunk.count)
+                            buffer.writeBytes(chunk)
+                            try await concurrentFile.file.write(buffer, at: chunkOffset)
+                        }
+                        chunkStart = chunkEnd
+                    }
+
+                    do {
+                        while let _ = try await group.next() { }
+                    } catch {
+                        group.cancelAll()
+                        throw error
+                    }
+                }
+            } catch {
+                do {
+                    // All children have completed by the time the task group
+                    // throws. Roll back any later successful writes in this
+                    // batch so the visible length remains a continuous prefix.
+                    try await truncate(file: file, to: batchOffset)
+                } catch let rollbackError {
+                    // A failed fsetstat leaves the remote length ambiguous.
+                    // Close the handle and remove the partial path so a retry
+                    // cannot mistake a sparse/extended file for a safe resume.
+                    try? await file.close()
+                    do {
+                        try await client.remove(at: path)
+                    } catch let cleanupError {
+                        throw SFTPWriteRecoveryError(
+                            path: path,
+                            original: error,
+                            rollback: rollbackError,
+                            cleanup: cleanupError
+                        )
+                    }
+                }
+                throw error
+            }
+            batchStart = batchEnd
+        }
+    }
+
     private static func normalizedSFTPError(_ error: Error, operation: String) -> Error {
         guard let status = error as? SFTPMessage.Status else { return error }
         let serverMessage = status.message.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -413,11 +735,12 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         func read(length: Int) async throws -> Data {
             guard !closed else { return Data() }
             do {
-                let buffer = try await file.read(
-                    from: offset,
-                    length: UInt32(clamping: length)
+                let data = try await SFTPProvider.readPipelined(
+                    file: file,
+                    offset: offset,
+                    length: length,
+                    path: path
                 )
-                let data = Data(buffer.readableBytesView)
                 offset += UInt64(data.count)
                 return data
             } catch let status as SFTPMessage.Status where status.errorCode == .eof {
@@ -438,11 +761,14 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
 
     private final class SFTPWriteSession: RemoteChunkWriteSession, @unchecked Sendable {
         private let file: SFTPFile
+        private let client: SFTPClient
         private let path: String
         private var closed = false
+        private var cleanupRequired = false
 
-        init(file: SFTPFile, path: String) {
+        init(file: SFTPFile, client: SFTPClient, path: String) {
             self.file = file
+            self.client = client
             self.path = path
         }
 
@@ -451,9 +777,16 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
                 throw RemoteProviderError.invalidResponse("The SFTP write session for \(path) is already closed.")
             }
             do {
-                var buffer = ByteBufferAllocator().buffer(capacity: data.count)
-                buffer.writeBytes(data)
-                try await file.write(buffer, at: offset)
+                try await SFTPProvider.writePipelined(
+                    file: file,
+                    client: client,
+                    path: path,
+                    data: data,
+                    at: offset
+                )
+            } catch let recovery as SFTPProvider.SFTPWriteRecoveryError {
+                cleanupRequired = true
+                throw recovery
             } catch {
                 throw SFTPProvider.normalizedSFTPError(error, operation: "stream write \(path)")
             }
@@ -476,7 +809,9 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             guard !closed else { return }
             closed = true
             try? await file.close()
+            if cleanupRequired {
+                try? await client.remove(at: path)
+            }
         }
     }
 }
-

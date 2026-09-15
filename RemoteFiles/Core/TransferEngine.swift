@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 
+private struct TransferPausedError: Error, Sendable { }
+
 @MainActor
 final class TransferEngine: ObservableObject {
     @Published private(set) var records: [TransferRecord] = []
@@ -9,9 +11,31 @@ final class TransferEngine: ObservableObject {
         let task: Task<Void, Never>
     }
 
+    private struct ProgressSnapshot {
+        let token: TransferExecutionToken
+        let transferredBytes: UInt64
+        let progress: Double
+        let bytesPerSecond: Double?
+        var lastPublishedAt: Date
+        var lastPublishedBytes: UInt64
+    }
+
+    // A larger bounded buffer amortizes protocol round trips without retaining the
+    // whole file in memory. Providers may still return a shorter buffer.
+    private static let transferChunkSize = 4 * 1024 * 1024
+    private static let progressUpdateInterval: TimeInterval = 0.2
+    private static let progressUpdateBytes: UInt64 = 512 * 1024
+    private static let progressByteUpdateInterval: TimeInterval = 0.05
+    private static let progressPersistenceDelay: UInt64 = 750_000_000
+
     private var tasks: [UUID: ActiveTask] = [:]
     private var executionOwnership: [UUID: TransferExecutionOwnership] = [:]
     private var pendingRetries: [UUID: ConnectionStore] = [:]
+    private var pauseRequests: Set<UUID> = []
+    private var committing: Set<UUID> = []
+    private var finalizedTransfers: Set<UUID> = []
+    private var progressSnapshots: [UUID: ProgressSnapshot] = [:]
+    private var pendingPersistenceTask: Task<Void, Never>?
     private let fileURL: URL
 
     init(fileURL: URL? = nil) {
@@ -44,10 +68,11 @@ final class TransferEngine: ObservableObject {
             source: "\(source.profile.name):\(item.path)",
             destination: "\(destination.profile.name):\(destinationPath)",
             totalBytes: item.size,
-            sourceRevision: item.revision
+            sourceRevision: item.revision,
+            isResumable: supportsResuming(item: item, source: source, destination: destination)
         )
         records.insert(record, at: 0)
-        persist()
+        persistNow()
         start(record: record, item: item, source: source, destination: destination, disconnectSource: false)
     }
 
@@ -69,10 +94,13 @@ final class TransferEngine: ObservableObject {
             source: "On Device:\(localURL.lastPathComponent)",
             destination: "\(destination.profile.name):\(destinationPath)",
             totalBytes: totalBytes,
-            kind: .upload
+            kind: .upload,
+            isResumable: totalBytes.map { $0 > 0 } == true
+                && destination.capabilities.contains(.randomWrite)
+                && destination is any RemoteChunkWritableProvider
         )
         records.insert(record, at: 0)
-        persist()
+        persistNow()
         await startLocalTransfer(record: record) { [weak self] token in
             guard let self else { return }
             try await self.performUpload(
@@ -104,10 +132,13 @@ final class TransferEngine: ObservableObject {
             destination: "\(destinationLabel):\(item.name)",
             totalBytes: item.size,
             sourceRevision: item.revision,
-            kind: .download
+            kind: .download,
+            isResumable: item.size.map { $0 > 0 } == true
+                && source.capabilities.contains(.randomRead)
+                && source is any RemoteChunkReadableProvider
         )
         records.insert(record, at: 0)
-        persist()
+        persistNow()
         await startLocalTransfer(record: record) { [weak self] token in
             guard let self else { return }
             try await self.performDownload(
@@ -131,6 +162,44 @@ final class TransferEngine: ObservableObject {
         guard let current = records.first(where: { $0.id == record.id }),
               current.operationKind == .serverToServer,
               current.state == .failed || current.state == .cancelled else { return }
+        restart(current, using: connections)
+    }
+
+    func pause(_ record: TransferRecord) {
+        guard let current = records.first(where: { $0.id == record.id }),
+              current.supportsResuming,
+              current.state == .running || current.state == .queued,
+              current.commitPending != true,
+              !committing.contains(current.id) else { return }
+        pauseRequests.insert(current.id)
+        pendingRetries[current.id] = nil
+        update(current.id) {
+            $0.state = .paused
+            $0.errorMessage = nil
+            $0.bytesPerSecond = nil
+        }
+    }
+
+    func resume(_ record: TransferRecord, using connections: ConnectionStore) {
+        guard let current = records.first(where: { $0.id == record.id }),
+              current.supportsResuming,
+              current.state == .paused || current.state == .failed || current.state == .cancelled else { return }
+        if current.state == .paused,
+           let active = tasks[current.id],
+           executionOwnership[current.id]?.owns(active.token) == true,
+           pauseRequests.remove(current.id) != nil {
+            update(current.id) {
+                $0.state = .running
+                $0.errorMessage = nil
+            }
+            return
+        }
+        guard current.operationKind == .serverToServer else { return }
+        restart(current, using: connections)
+    }
+
+    private func restart(_ current: TransferRecord, using connections: ConnectionStore) {
+        pauseRequests.remove(current.id)
         update(current.id) {
             $0.state = .queued
             $0.errorMessage = nil
@@ -153,17 +222,43 @@ final class TransferEngine: ObservableObject {
         }
     }
 
+    private func supportsResuming(
+        item: RemoteItem,
+        source: any RemoteFileProvider,
+        destination: any RemoteFileProvider
+    ) -> Bool {
+        guard let size = item.size, size >= 0,
+              source.capabilities.contains(.randomRead),
+              destination.capabilities.contains(.randomWrite),
+              destination.capabilities.contains(.move),
+              source is any RemoteChunkReadableProvider,
+              destination is any RemoteChunkWritableProvider else {
+            return false
+        }
+        return TransferResumePolicy.decision(
+            transferredBytes: 0,
+            persistedRevision: item.revision,
+            currentRevision: item.revision
+        ) != .restart
+    }
+
     func cancel(_ record: TransferRecord) {
         guard let current = records.first(where: { $0.id == record.id }),
-              current.state == .running || current.state == .queued else { return }
+              current.state == .running || current.state == .queued,
+              current.commitPending != true,
+              !committing.contains(current.id) else { return }
         if let active = tasks[current.id] {
             active.task.cancel()
             executionOwnership[current.id]?.invalidate()
         }
+        pauseRequests.remove(current.id)
         pendingRetries[current.id] = nil
         update(current.id) {
             $0.state = .cancelled
             $0.errorMessage = nil
+            if current.operationKind != .serverToServer {
+                $0.isResumable = false
+            }
         }
     }
 
@@ -277,24 +372,52 @@ final class TransferEngine: ObservableObject {
         do {
             try checkExecution(token, for: id)
             let currentRecord = records.first(where: { $0.id == id })
-            let decision = TransferResumePolicy.decision(
+            let policyDecision = TransferResumePolicy.decision(
                 transferredBytes: currentRecord?.transferredBytes,
                 persistedRevision: currentRecord?.sourceRevision,
                 currentRevision: item.revision
             )
-            var canReadChunks = source is any RemoteChunkReadableProvider
-            if canReadChunks, let probing = source as? any RemoteChunkReadSupportProbing {
-                canReadChunks = try await probing.supportsChunkedReads(path: item.path)
+            // A task that was not advertised as resumable must restart from a
+            // clean partial even if its provider happens to expose chunk APIs.
+            // This keeps the UI capability contract and the actual retry path in
+            // agreement.
+            let decision: TransferResumeDecision = currentRecord?.supportsResuming == true
+                ? policyDecision
+                : .restart
+            let partialPath = streamPartialPath(for: destinationPath, recordID: id)
+            var alreadyCommitted = false
+            if currentRecord?.commitPending == true,
+               let total = item.size, total >= 0,
+               case .resume = decision {
+                alreadyCommitted = try await reconcilePendingFinalization(
+                    for: id,
+                    token: token,
+                    destination: destination,
+                    destinationPath: destinationPath,
+                    partialPath: partialPath,
+                    expectedBytes: UInt64(total)
+                )
+            } else if currentRecord?.commitPending == true {
+                update(id, token: token) {
+                    $0.commitPending = false
+                    $0.commitDestinationExisted = nil
+                }
+            }
+            var canReadChunks = false
+            if !alreadyCommitted {
+                canReadChunks = source is any RemoteChunkReadableProvider
+                if canReadChunks, let probing = source as? any RemoteChunkReadSupportProbing {
+                    canReadChunks = try await probing.supportsChunkedReads(path: item.path)
+                }
             }
             let canStream = canReadChunks
                 && destination is any RemoteChunkWritableProvider
                 && destination.capabilities.contains(.move)
                 && (item.size.map { $0 >= 0 } ?? false)
-            let partialPath = streamPartialPath(for: destinationPath, recordID: id)
             var requestedResumeOffset: UInt64 = 0
             var overwritePartial = false
 
-            if canStream, case .resume = decision,
+            if !alreadyCommitted, canStream, case .resume = decision,
                let total = item.size, total >= 0,
                let partialItem = try? await destination.attributes(path: partialPath) {
                 guard !partialItem.isDirectory else {
@@ -303,13 +426,15 @@ final class TransferEngine: ObservableObject {
                 if let partialSize = partialItem.size,
                    partialSize >= 0,
                    partialSize <= total,
-                   let offset = UInt64(exactly: partialSize) {
-                    requestedResumeOffset = offset
-                    overwritePartial = offset == 0
+                   let partialOffset = UInt64(exactly: partialSize) {
+                    requestedResumeOffset = min(decision.offset, min(partialOffset, UInt64(total)))
+                    // Bytes beyond the confirmed checkpoint belong to an interrupted
+                    // write and must not be appended to or treated as a valid prefix.
+                    overwritePartial = requestedResumeOffset == 0 || partialOffset > requestedResumeOffset
                 } else {
                     overwritePartial = true
                 }
-            } else if canStream, decision == .restart,
+            } else if !alreadyCommitted, canStream, decision == .restart,
                       let partialItem = try? await destination.attributes(path: partialPath) {
                 guard !partialItem.isDirectory else {
                     throw RemoteProviderError.conflict("The transfer partial path is occupied by a directory.")
@@ -317,18 +442,25 @@ final class TransferEngine: ObservableObject {
                 overwritePartial = true
             }
 
-            update(id, token: token) {
-                $0.state = .running
-                $0.progress = 0.05
-                $0.totalBytes = item.size
-                $0.sourceRevision = item.revision
-                $0.transferredBytes = requestedResumeOffset
-                $0.startedAt = Date()
-                $0.bytesPerSecond = nil
+            if !alreadyCommitted {
+                try checkPause(for: id, token: token)
+                progressSnapshots[id] = nil
+                update(id, token: token) {
+                    $0.state = .running
+                    $0.progress = 0.05
+                    $0.totalBytes = item.size
+                    $0.sourceRevision = item.revision
+                    $0.transferredBytes = requestedResumeOffset
+                    $0.startedAt = Date()
+                    $0.bytesPerSecond = nil
+                }
+                try checkExecution(token, for: id)
             }
-            try checkExecution(token, for: id)
             let overwrite = records.first(where: { $0.id == id })?.overwrite ?? false
-            if canStream,
+            if alreadyCommitted {
+                // The previous attempt durably committed the final rename. Keep
+                // the commit lock until the terminal record update below.
+            } else if canStream,
                let reader = source as? any RemoteChunkReadableProvider,
                let writer = destination as? any RemoteChunkWritableProvider,
                let total = item.size, total >= 0 {
@@ -343,9 +475,20 @@ final class TransferEngine: ObservableObject {
                     requestedResumeOffset: requestedResumeOffset,
                     token: token
                 )
-                try checkExecution(token, for: id)
+                try await beginFinalization(
+                    for: id,
+                    token: token,
+                    destination: destination,
+                    destinationPath: destinationPath,
+                    overwrite: overwrite
+                )
                 try await destination.move(from: partialPath, to: destinationPath, overwrite: overwrite)
             } else {
+                // A record can outlive a provider capability change (or a runtime
+                // range-read probe can reject chunking). Do not leave the list
+                // advertising pause/resume once we know this attempt has to use
+                // the all-or-nothing temporary-file path.
+                disableResuming(for: id, token: token)
                 update(id, token: token) { $0.transferredBytes = 0; $0.progress = 0.05 }
                 try checkExecution(token, for: id)
                 let startedAt = Date()
@@ -356,11 +499,17 @@ final class TransferEngine: ObservableObject {
                 update(id, token: token) { $0.progress = 0.55 }
                 try await destination.upload(from: tempURL, to: destinationPath, overwrite: overwrite)
                 if let total = item.size, total > 0 {
-                    updateSpeed(id: id, token: token, transferredBytes: UInt64(total), baselineBytes: 0, startedAt: startedAt)
-                    update(id, token: token) { $0.transferredBytes = UInt64(total) }
+                    update(id, token: token) {
+                        $0.transferredBytes = UInt64(total)
+                        let elapsed = Date().timeIntervalSince(startedAt)
+                        if elapsed >= 0.2 {
+                            $0.bytesPerSecond = Double(total) / elapsed
+                        }
+                    }
                 }
             }
             try checkExecution(token, for: id)
+            try checkPause(for: id, token: token)
             if let expected = item.size,
                let destinationItem = try? await destination.attributes(path: destinationPath),
                let actual = destinationItem.size,
@@ -374,18 +523,30 @@ final class TransferEngine: ObservableObject {
                 $0.state = .completed
                 $0.progress = 1
                 $0.errorMessage = nil
+                $0.commitPending = false
+                $0.commitDestinationExisted = nil
+            }
+        } catch is TransferPausedError {
+            pauseRequests.remove(id)
+            update(id, token: token) {
+                $0.state = .paused
+                $0.errorMessage = nil
+                $0.bytesPerSecond = nil
             }
         } catch is CancellationError {
+            pauseRequests.remove(id)
             update(id, token: token) {
                 $0.state = .cancelled
                 $0.errorMessage = nil
             }
         } catch {
+            pauseRequests.remove(id)
             update(id, token: token) {
                 $0.state = .failed
                 $0.errorMessage = error.localizedDescription
             }
         }
+        committing.remove(id)
         await destination.disconnect()
         if disconnectSource { await source.disconnect() }
     }
@@ -393,6 +554,15 @@ final class TransferEngine: ObservableObject {
     private func streamPartialPath(for destinationPath: String, recordID: UUID) -> String {
         let name = "." + "remotefiles-\(recordID.uuidString.lowercased()).partial"
         return RemotePath.join(RemotePath.parent(destinationPath), name)
+    }
+
+    private func destinationItemIfPresent(
+        path: String,
+        on destination: any RemoteFileProvider
+    ) async throws -> RemoteItem? {
+        let normalized = RemotePath.normalize(path)
+        let entries = try await destination.list(path: RemotePath.parent(normalized))
+        return entries.first(where: { RemotePath.normalize($0.path) == normalized })
     }
 
     private func streamCopy(
@@ -406,7 +576,7 @@ final class TransferEngine: ObservableObject {
         requestedResumeOffset: UInt64,
         token: TransferExecutionToken
     ) async throws {
-        let chunkSize = 1024 * 1024
+        let chunkSize = Self.transferChunkSize
         let requestedOffset = min(requestedResumeOffset, totalBytes)
         try checkExecution(token, for: recordID)
         let openedWriteSession = try await writer.openWriteSession(
@@ -414,33 +584,42 @@ final class TransferEngine: ObservableObject {
             overwrite: overwrite,
             resumeOffset: requestedOffset
         )
-        try checkExecution(token, for: recordID)
         let writeSession = openedWriteSession?.session
-        var offset: UInt64
-        if let openedWriteSession {
-            offset = openedWriteSession.offset
-        } else {
-            offset = try await writer.prepareChunkedUpload(
-                path: destinationPath,
-                overwrite: overwrite,
-                resumeOffset: requestedOffset
-            )
-        }
-        try checkExecution(token, for: recordID)
-        update(recordID, token: token) {
-            $0.transferredBytes = offset
-            let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
-            $0.progress = 0.05 + 0.9 * min(1, fraction)
-        }
-
-        let speedBaseline = offset
-        let speedStartedAt = Date()
-
-        let readSession = try await reader.openReadSession(path: item.path, offset: offset)
-        try checkExecution(token, for: recordID)
+        var preparedLegacyUpload = false
+        var readSession: (any RemoteChunkReadSession)?
         do {
+            try checkExecution(token, for: recordID)
+            var offset: UInt64
+            if let openedWriteSession {
+                offset = openedWriteSession.offset
+            } else {
+                preparedLegacyUpload = true
+                offset = try await writer.prepareChunkedUpload(
+                    path: destinationPath,
+                    overwrite: overwrite,
+                    resumeOffset: requestedOffset
+                )
+            }
+            guard offset <= totalBytes else {
+                throw RemoteProviderError.invalidResponse(
+                    "The destination reported a resume offset beyond the source size."
+                )
+            }
+            try checkExecution(token, for: recordID)
+            update(recordID, token: token) {
+                $0.transferredBytes = offset
+                let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
+                $0.progress = 0.05 + 0.9 * min(1, fraction)
+            }
+
+            let speedBaseline = offset
+            let speedStartedAt = Date()
+
+            readSession = try await reader.openReadSession(path: item.path, offset: offset)
+            try checkExecution(token, for: recordID)
             while offset < totalBytes {
                 try checkExecution(token, for: recordID)
+                try checkPause(for: recordID, token: token)
                 let remaining = totalBytes - offset
                 let length = Int(min(UInt64(chunkSize), remaining))
                 let data: Data
@@ -453,6 +632,9 @@ final class TransferEngine: ObservableObject {
                 guard !data.isEmpty else {
                     throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
                 }
+                guard data.count <= length else {
+                    throw RemoteProviderError.invalidResponse("The source returned more bytes than requested.")
+                }
                 if let writeSession {
                     try await writeSession.write(data, at: offset)
                 } else {
@@ -461,19 +643,18 @@ final class TransferEngine: ObservableObject {
                 try checkExecution(token, for: recordID)
                 offset += UInt64(data.count)
                 let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
-                update(recordID, token: token) {
-                    $0.transferredBytes = offset
-                    $0.progress = 0.05 + 0.9 * min(1, fraction)
-                }
-                updateSpeed(
+                updateProgress(
                     id: recordID,
                     token: token,
                     transferredBytes: offset,
+                    progress: 0.05 + 0.9 * min(1, fraction),
                     baselineBytes: speedBaseline,
                     startedAt: speedStartedAt
                 )
+                try checkPause(for: recordID, token: token)
             }
             try checkExecution(token, for: recordID)
+            try checkPause(for: recordID, token: token)
             await readSession?.close()
             if let writeSession {
                 try await writeSession.finish()
@@ -483,6 +664,9 @@ final class TransferEngine: ObservableObject {
         } catch {
             await readSession?.close()
             await writeSession?.abort()
+            if writeSession == nil, preparedLegacyUpload {
+                await writer.abortChunkedUpload(path: destinationPath)
+            }
             throw error
         }
     }
@@ -492,7 +676,11 @@ final class TransferEngine: ObservableObject {
             .filter { $0.state == .completed || $0.state == .cancelled }
             .map(\.id)
         for id in removedIDs {
+            progressSnapshots[id] = nil
             pendingRetries[id] = nil
+            pauseRequests.remove(id)
+            committing.remove(id)
+            finalizedTransfers.remove(id)
             if let active = tasks[id] {
                 active.task.cancel()
                 executionOwnership[id]?.invalidate()
@@ -501,7 +689,7 @@ final class TransferEngine: ObservableObject {
             }
         }
         records.removeAll { $0.state == .completed || $0.state == .cancelled }
-        persist()
+        persistNow()
     }
 
     func remove(_ record: TransferRecord) {
@@ -514,8 +702,12 @@ final class TransferEngine: ObservableObject {
             executionOwnership[current.id] = nil
         }
         pendingRetries[current.id] = nil
+        pauseRequests.remove(current.id)
+        committing.remove(current.id)
+        finalizedTransfers.remove(current.id)
+        progressSnapshots[current.id] = nil
         records.removeAll { $0.id == current.id }
-        persist()
+        persistNow()
     }
 
     private func beginExecution(for id: UUID) -> TransferExecutionToken {
@@ -532,6 +724,156 @@ final class TransferEngine: ObservableObject {
         }
     }
 
+    private func checkPause(for id: UUID, token: TransferExecutionToken) throws {
+        guard executionOwnership[id]?.owns(token) == true else {
+            throw CancellationError()
+        }
+        if pauseRequests.contains(id) {
+            throw TransferPausedError()
+        }
+    }
+
+    private func disableResuming(for id: UUID, token: TransferExecutionToken) {
+        // A pause request can race with the asynchronous capability probe. Once
+        // the provider has forced an all-or-nothing path there is no safe local
+        // checkpoint to wait on, so consume that stale request and keep the
+        // transfer running instead of leaving an unresumable record stuck at
+        // `paused`.
+        pauseRequests.remove(id)
+        update(id, token: token) {
+            $0.isResumable = false
+            if $0.state == .paused {
+                $0.state = .running
+                $0.errorMessage = nil
+            }
+        }
+    }
+
+    private func beginFinalization(
+        for id: UUID,
+        token: TransferExecutionToken,
+        destination: any RemoteFileProvider,
+        destinationPath: String,
+        overwrite: Bool
+    ) async throws {
+        try checkExecution(token, for: id)
+        try checkPause(for: id, token: token)
+
+        // Record the commit phase before the rename. The private partial path is
+        // the durable payload, while this marker tells a later engine launch that
+        // a missing partial plus a complete final may represent a completed
+        // rename rather than a fresh unrelated destination.
+        let destinationItem = try await destinationItemIfPresent(
+            path: destinationPath,
+            on: destination
+        )
+        if destinationItem != nil, !overwrite {
+            throw RemoteProviderError.conflict("An item already exists at \(destinationPath).")
+        }
+        let destinationExisted = destinationItem != nil
+        try checkExecution(token, for: id)
+        try checkPause(for: id, token: token)
+        committing.insert(id)
+        update(id, token: token) {
+            $0.commitPending = true
+            $0.commitDestinationExisted = destinationExisted
+        }
+    }
+
+    private func enterFinalizationLock(
+        for id: UUID,
+        token: TransferExecutionToken,
+        allowLatePause: Bool = false
+    ) throws {
+        try checkExecution(token, for: id)
+        if allowLatePause {
+            // The final payload write has already returned. Treat a pause that
+            // arrives in this tiny close/rename window as a late UI action and
+            // finish the committed file instead of creating a paused record with
+            // no remaining work.
+            pauseRequests.remove(id)
+        } else {
+            try checkPause(for: id, token: token)
+        }
+        committing.insert(id)
+        update(id, token: token) {
+            $0.commitPending = true
+            $0.commitDestinationExisted = nil
+        }
+    }
+
+    private func reconcilePendingFinalization(
+        for id: UUID,
+        token: TransferExecutionToken,
+        destination: any RemoteFileProvider,
+        destinationPath: String,
+        partialPath: String,
+        expectedBytes: UInt64
+    ) async throws -> Bool {
+        guard let record = records.first(where: { $0.id == id }),
+              record.commitPending == true else {
+            return false
+        }
+
+        // Block pause/cancel while we determine whether the previous rename
+        // committed. A late UI action must not turn a committed final file back
+        // into a paused/cancelled record.
+        pauseRequests.remove(id)
+        committing.insert(id)
+        var keepCommitLock = false
+        defer {
+            if !keepCommitLock {
+                committing.remove(id)
+            }
+        }
+        try checkExecution(token, for: id)
+        let finalItem = try await destinationItemIfPresent(path: destinationPath, on: destination)
+        try checkExecution(token, for: id)
+        let partialItem = try await destinationItemIfPresent(path: partialPath, on: destination)
+        try checkExecution(token, for: id)
+
+        switch TransferCommitPolicy.decision(
+            finalItem: finalItem,
+            partialItem: partialItem,
+            expectedBytes: expectedBytes,
+            destinationExistedBeforeCommit: record.commitDestinationExisted
+        ) {
+        case .completed:
+            update(id, token: token) {
+                $0.state = .running
+                $0.transferredBytes = expectedBytes
+                $0.progress = 0.95
+            }
+            keepCommitLock = true
+            return true
+        case .uncertain:
+            update(id, token: token) {
+                $0.commitPending = false
+                $0.commitDestinationExisted = nil
+            }
+            throw RemoteProviderError.conflict(
+                "The transfer finalization status is uncertain; manually verify the destination before retrying."
+            )
+        case .resume:
+            // The rename did not leave a complete final. Keep any durable
+            // partial prefix and let the normal resume path reconcile it against
+            // the confirmed checkpoint.
+            update(id, token: token) {
+                $0.commitPending = false
+                $0.commitDestinationExisted = nil
+            }
+            return false
+        }
+    }
+
+    private func waitWhilePaused(for id: UUID, token: TransferExecutionToken) async throws {
+        while pauseRequests.contains(id) {
+            try checkExecution(token, for: id)
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        try checkExecution(token, for: id)
+    }
+
     private func finishExecution(for id: UUID, token: TransferExecutionToken) {
         guard tasks[id]?.token == token else { return }
         // A retry coordinator owns cleanup while it waits for this task to exit.
@@ -542,6 +884,10 @@ final class TransferEngine: ObservableObject {
     private func finishExecutionAfterExit(for id: UUID, token: TransferExecutionToken) {
         guard tasks[id]?.token == token else { return }
         tasks[id] = nil
+        progressSnapshots[id] = nil
+        pauseRequests.remove(id)
+        committing.remove(id)
+        finalizedTransfers.remove(id)
         _ = executionOwnership[id]?.finish(token)
 
         guard records.contains(where: { $0.id == id }) else {
@@ -569,9 +915,10 @@ final class TransferEngine: ObservableObject {
         _ mutation: (inout TransferRecord) -> Void
     ) {
         if let token, executionOwnership[id]?.owns(token) != true { return }
+        flushProgress(for: id, token: token)
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         mutation(&records[index])
-        persist()
+        persistNow()
     }
 
     private func startLocalTransfer(
@@ -586,27 +933,88 @@ final class TransferEngine: ObservableObject {
             do {
                 try self.checkExecution(token, for: id)
                 try await operation(token)
-                try self.checkExecution(token, for: id)
+                // Once the last write/rename has returned, a caller cancellation
+                // arriving in the tiny terminal window must not turn a committed
+                // file into a cancelled transfer.
+                let finalized = self.finalizedTransfers.contains(id)
+                if !finalized {
+                    try self.checkExecution(token, for: id)
+                }
+                if !self.completeFinalizedLocalTransfer(id: id, token: token) {
+                    self.update(id, token: token) {
+                        $0.state = .completed
+                        $0.progress = 1
+                        $0.errorMessage = nil
+                        $0.commitPending = false
+                        $0.commitDestinationExisted = nil
+                    }
+                }
+            } catch is TransferPausedError {
+                // A pause is a resumable state, not a failed local transfer. The
+                // normal local path waits at the chunk boundary, but this catch
+                // also covers a pause that races with setup/finalization.
                 self.update(id, token: token) {
-                    $0.state = .completed
-                    $0.progress = 1
+                    $0.state = .paused
                     $0.errorMessage = nil
+                    $0.bytesPerSecond = nil
+                    $0.commitPending = false
+                    $0.commitDestinationExisted = nil
                 }
             } catch is CancellationError {
                 self.update(id, token: token) {
                     $0.state = .cancelled
                     $0.errorMessage = nil
+                    $0.isResumable = false
+                    $0.commitPending = false
+                    $0.commitDestinationExisted = nil
                 }
             } catch {
                 self.update(id, token: token) {
                     $0.state = .failed
                     $0.errorMessage = error.localizedDescription
+                    $0.isResumable = false
+                    $0.commitPending = false
+                    $0.commitDestinationExisted = nil
                 }
             }
             self.finishExecution(for: id, token: token)
         }
         tasks[id] = ActiveTask(token: token, task: task)
-        await task.value
+        // The local operation is kept as a separately-owned task so pause/cancel
+        // actions from the transfer list can address it. Tie its lifetime to the
+        // caller as well: uploadFile/downloadFile are async APIs and callers
+        // commonly cancel the task that is awaiting this method (for example when
+        // a view disappears). Without this handler that cancellation would leave
+        // a paused I/O task and its file/session open indefinitely.
+        await withTaskCancellationHandler(operation: {
+            await task.value
+        }, onCancel: {
+            task.cancel()
+        })
+    }
+
+    private func completeFinalizedLocalTransfer(
+        id: UUID,
+        token: TransferExecutionToken
+    ) -> Bool {
+        guard finalizedTransfers.contains(id),
+              tasks[id]?.token == token,
+              let index = records.firstIndex(where: { $0.id == id }) else {
+            return false
+        }
+
+        let ownsToken = executionOwnership[id]?.owns(token) == true
+        // A UI cancel invalidates ownership before the provider can return. It is
+        // safe to override that early terminal state only while this exact task
+        // still occupies the slot and the record has not been retried/removed.
+        guard ownsToken || records[index].state == .cancelled else { return false }
+        records[index].state = .completed
+        records[index].progress = 1
+        records[index].errorMessage = nil
+        records[index].commitPending = false
+        records[index].commitDestinationExisted = nil
+        persistNow()
+        return true
     }
 
     private func performUpload(
@@ -619,7 +1027,9 @@ final class TransferEngine: ObservableObject {
     ) async throws {
         let values = try localURL.resourceValues(forKeys: [.fileSizeKey])
         let totalBytes = UInt64(max(0, values.fileSize ?? 0))
+        try await waitWhilePaused(for: id, token: token)
         let startedAt = Date()
+        progressSnapshots[id] = nil
         update(id, token: token) {
             $0.state = .running
             $0.progress = totalBytes == 0 ? 0.5 : 0
@@ -635,10 +1045,12 @@ final class TransferEngine: ObservableObject {
             let targetPath = usePartial ? streamPartialPath(for: destinationPath, recordID: id) : destinationPath
             let opened = try await writer.openWriteSession(path: targetPath, overwrite: usePartial ? true : overwrite, resumeOffset: 0)
             let session = opened?.session
+            var preparedLegacyUpload = false
             let preparedOffset: UInt64
             if let opened {
                 preparedOffset = opened.offset
             } else {
+                preparedLegacyUpload = true
                 preparedOffset = try await writer.prepareChunkedUpload(
                     path: targetPath,
                     overwrite: usePartial ? true : overwrite,
@@ -647,17 +1059,27 @@ final class TransferEngine: ObservableObject {
             }
             guard preparedOffset == 0 else {
                 await session?.abort()
+                if session == nil, preparedLegacyUpload {
+                    await writer.abortChunkedUpload(path: targetPath)
+                }
+                if usePartial {
+                    try? await destination.remove(path: targetPath, isDirectory: false)
+                }
                 throw RemoteProviderError.invalidResponse("The upload destination did not start at byte 0.")
             }
 
-            let handle = try FileHandle(forReadingFrom: localURL)
-            defer { try? handle.close() }
-            var offset: UInt64 = 0
+            var localReader: TransferFileReader?
             do {
+                localReader = try TransferFileReader(url: localURL)
+                guard let localReader else {
+                    throw RemoteProviderError.invalidResponse("The local upload reader could not be opened.")
+                }
+                var offset: UInt64 = 0
                 while offset < totalBytes {
                     try checkExecution(token, for: id)
-                    let length = Int(min(UInt64(1024 * 1024), totalBytes - offset))
-                    guard let data = try handle.read(upToCount: length), !data.isEmpty else {
+                    try await waitWhilePaused(for: id, token: token)
+                    let length = Int(min(UInt64(Self.transferChunkSize), totalBytes - offset))
+                    guard let data = try await localReader.read(upToCount: length), !data.isEmpty else {
                         throw RemoteProviderError.invalidResponse("The local file ended before the expected size was reached.")
                     }
                     if let session {
@@ -667,28 +1089,58 @@ final class TransferEngine: ObservableObject {
                     }
                     offset += UInt64(data.count)
                     let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
-                    update(id, token: token) {
-                        $0.transferredBytes = offset
-                        $0.progress = min(1, fraction)
-                    }
-                    updateSpeed(id: id, token: token, transferredBytes: offset, baselineBytes: 0, startedAt: startedAt)
+                    updateProgress(
+                        id: id,
+                        token: token,
+                        transferredBytes: offset,
+                        progress: min(1, fraction),
+                        baselineBytes: 0,
+                        startedAt: startedAt
+                    )
+                    try await waitWhilePaused(for: id, token: token)
                 }
+                // The payload is complete. Hold the commit lock across close,
+                // preflight, and the optional rename so a late pause/cancel
+                // cannot leave a local upload in a terminal-but-resumable limbo.
+                try enterFinalizationLock(for: id, token: token, allowLatePause: true)
                 if let session {
                     try await session.finish()
                 } else {
                     try await writer.finishChunkedUpload(path: targetPath)
                 }
                 if usePartial {
+                    let destinationExisted = try await destinationItemIfPresent(
+                        path: destinationPath,
+                        on: destination
+                    ) != nil
+                    update(id, token: token) {
+                        $0.commitDestinationExisted = destinationExisted
+                    }
                     try await destination.move(from: targetPath, to: destinationPath, overwrite: overwrite)
                 }
+                finalizedTransfers.insert(id)
+                await localReader.close()
             } catch {
+                await localReader?.close()
                 await session?.abort()
+                if session == nil, preparedLegacyUpload {
+                    await writer.abortChunkedUpload(path: targetPath)
+                }
+                if usePartial {
+                    try? await destination.remove(path: targetPath, isDirectory: false)
+                }
                 throw error
             }
         } else {
             try await destination.upload(from: localURL, to: destinationPath, overwrite: overwrite)
-            update(id, token: token) { $0.transferredBytes = totalBytes }
-            updateSpeed(id: id, token: token, transferredBytes: totalBytes, baselineBytes: 0, startedAt: startedAt)
+            finalizedTransfers.insert(id)
+            update(id, token: token) {
+                $0.transferredBytes = totalBytes
+                let elapsed = Date().timeIntervalSince(startedAt)
+                if elapsed >= 0.2 {
+                    $0.bytesPerSecond = Double(totalBytes) / elapsed
+                }
+            }
         }
     }
 
@@ -699,9 +1151,11 @@ final class TransferEngine: ObservableObject {
         localURL: URL,
         token: TransferExecutionToken
     ) async throws {
+        try await waitWhilePaused(for: id, token: token)
         try FileManager.default.createDirectory(at: localURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: localURL)
         let startedAt = Date()
+        progressSnapshots[id] = nil
         update(id, token: token) {
             $0.state = .running
             $0.progress = 0
@@ -719,15 +1173,16 @@ final class TransferEngine: ObservableObject {
                let reader = source as? any RemoteChunkReadableProvider,
                let size = item.size, size >= 0 {
                 FileManager.default.createFile(atPath: localURL.path, contents: nil)
-                let handle = try FileHandle(forWritingTo: localURL)
-                defer { try? handle.close() }
+                let localWriter = try TransferFileWriter(url: localURL)
                 let totalBytes = UInt64(size)
                 var offset: UInt64 = 0
-                let session = try await reader.openReadSession(path: item.path, offset: 0)
+                var session: (any RemoteChunkReadSession)?
                 do {
+                    session = try await reader.openReadSession(path: item.path, offset: 0)
                     while offset < totalBytes {
                         try checkExecution(token, for: id)
-                        let length = Int(min(UInt64(1024 * 1024), totalBytes - offset))
+                        try await waitWhilePaused(for: id, token: token)
+                        let length = Int(min(UInt64(Self.transferChunkSize), totalBytes - offset))
                         let data: Data
                         if let session {
                             data = try await session.read(length: length)
@@ -737,25 +1192,47 @@ final class TransferEngine: ObservableObject {
                         guard !data.isEmpty else {
                             throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
                         }
-                        try handle.write(contentsOf: data)
+                        guard data.count <= length else {
+                            throw RemoteProviderError.invalidResponse("The source returned more bytes than requested.")
+                        }
+                        try await localWriter.write(data)
                         offset += UInt64(data.count)
                         let fraction = totalBytes == 0 ? 1 : Double(offset) / Double(totalBytes)
-                        update(id, token: token) {
-                            $0.transferredBytes = offset
-                            $0.progress = min(1, fraction)
-                        }
-                        updateSpeed(id: id, token: token, transferredBytes: offset, baselineBytes: 0, startedAt: startedAt)
+                        updateProgress(
+                            id: id,
+                            token: token,
+                            transferredBytes: offset,
+                            progress: min(1, fraction),
+                            baselineBytes: 0,
+                            startedAt: startedAt
+                        )
+                        try await waitWhilePaused(for: id, token: token)
                     }
+                    try enterFinalizationLock(for: id, token: token, allowLatePause: true)
                     await session?.close()
+                    await localWriter.close()
+                    finalizedTransfers.insert(id)
                 } catch {
                     await session?.close()
+                    await localWriter.close()
                     throw error
                 }
             } else {
+                // A persisted record may have been created when chunked reads
+                // were available but the provider can reject them at runtime.
+                // Such a transfer is not safely resumable and must not remain
+                // advertised as one in the list.
+                disableResuming(for: id, token: token)
                 try await source.download(path: item.path, to: localURL)
+                finalizedTransfers.insert(id)
                 let actual = (try? localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { UInt64($0) } ?? 0
-                update(id, token: token) { $0.transferredBytes = actual }
-                updateSpeed(id: id, token: token, transferredBytes: actual, baselineBytes: 0, startedAt: startedAt)
+                update(id, token: token) {
+                    $0.transferredBytes = actual
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    if elapsed >= 0.2 {
+                        $0.bytesPerSecond = Double(actual) / elapsed
+                    }
+                }
             }
         } catch {
             try? FileManager.default.removeItem(at: localURL)
@@ -763,17 +1240,67 @@ final class TransferEngine: ObservableObject {
         }
     }
 
-    private func updateSpeed(
+    private func updateProgress(
         id: UUID,
         token: TransferExecutionToken,
         transferredBytes: UInt64,
+        progress: Double,
         baselineBytes: UInt64,
         startedAt: Date
     ) {
-        let elapsed = Date().timeIntervalSince(startedAt)
-        guard elapsed >= 0.2, transferredBytes >= baselineBytes else { return }
-        let speed = Double(transferredBytes - baselineBytes) / elapsed
-        update(id, token: token) { $0.bytesPerSecond = speed }
+        guard executionOwnership[id]?.owns(token) == true,
+              let index = records.firstIndex(where: { $0.id == id }) else { return }
+
+        let now = Date()
+        let elapsed = now.timeIntervalSince(startedAt)
+        let speed: Double? = if elapsed >= 0.2, transferredBytes >= baselineBytes {
+            Double(transferredBytes - baselineBytes) / elapsed
+        } else {
+            nil
+        }
+        let normalizedProgress = min(1, max(0, progress))
+        let previous = progressSnapshots[id]
+        let sameAttempt = previous?.token == token
+        let lastPublishedAt = sameAttempt ? previous!.lastPublishedAt : .distantPast
+        let lastPublishedBytes = sameAttempt ? previous!.lastPublishedBytes : 0
+        let hasReachedByteThreshold = transferredBytes >= lastPublishedBytes
+            && transferredBytes - lastPublishedBytes >= Self.progressUpdateBytes
+        let shouldPublish = !sameAttempt
+            || normalizedProgress >= 1
+            || now.timeIntervalSince(lastPublishedAt) >= Self.progressUpdateInterval
+            || (hasReachedByteThreshold
+                && now.timeIntervalSince(lastPublishedAt) >= Self.progressByteUpdateInterval)
+        let latestSpeed = speed ?? previous?.bytesPerSecond ?? records[index].bytesPerSecond
+        progressSnapshots[id] = ProgressSnapshot(
+            token: token,
+            transferredBytes: transferredBytes,
+            progress: normalizedProgress,
+            bytesPerSecond: latestSpeed,
+            lastPublishedAt: shouldPublish ? now : lastPublishedAt,
+            lastPublishedBytes: shouldPublish ? transferredBytes : lastPublishedBytes
+        )
+        guard shouldPublish else { return }
+
+        records[index].transferredBytes = transferredBytes
+        records[index].progress = normalizedProgress
+        records[index].bytesPerSecond = latestSpeed
+        schedulePersistence()
+    }
+
+    private func flushProgress(for id: UUID, token: TransferExecutionToken?) {
+        guard let snapshot = progressSnapshots[id],
+              let index = records.firstIndex(where: { $0.id == id }) else { return }
+        if let token {
+            guard snapshot.token == token, executionOwnership[id]?.owns(token) == true else { return }
+        }
+
+        records[index].transferredBytes = snapshot.transferredBytes
+        records[index].progress = snapshot.progress
+        records[index].bytesPerSecond = snapshot.bytesPerSecond
+        var flushed = snapshot
+        flushed.lastPublishedAt = Date()
+        flushed.lastPublishedBytes = snapshot.transferredBytes
+        progressSnapshots[id] = flushed
     }
 
     private func throwIfFailed(recordID id: UUID) throws {
@@ -789,20 +1316,102 @@ final class TransferEngine: ObservableObject {
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               var decoded = try? JSONDecoder().decode([TransferRecord].self, from: data) else { return }
-        for index in decoded.indices where decoded[index].state == .running || decoded[index].state == .queued {
+        var changed = false
+        for index in decoded.indices {
+            let state = decoded[index].state
+            let wasInterrupted = state == .running || state == .queued || state == .paused
+            guard wasInterrupted else { continue }
             if decoded[index].operationKind == .serverToServer {
-                decoded[index].state = .queued
-                decoded[index].errorMessage = nil
+                if state == .paused {
+                    // A paused server transfer must have a durable continuation
+                    // contract. Do not restore an invalid/legacy paused record as
+                    // an action that the list cannot actually resume.
+                    guard decoded[index].supportsResuming else {
+                        decoded[index].state = .failed
+                        decoded[index].errorMessage = "This transfer cannot be resumed automatically."
+                        changed = true
+                        continue
+                    }
+                    if decoded[index].commitPending == true {
+                        // A commit marker represents an in-flight finalization,
+                        // not a user pause. Let the normal pending-resume path
+                        // reconcile it after the next launch.
+                        decoded[index].state = .queued
+                        decoded[index].errorMessage = nil
+                        changed = true
+                    }
+                } else {
+                    decoded[index].state = .queued
+                    decoded[index].errorMessage = nil
+                    changed = true
+                }
             } else {
                 decoded[index].state = .failed
                 decoded[index].errorMessage = "This local transfer was interrupted and cannot be resumed automatically."
+                decoded[index].isResumable = false
+                decoded[index].commitPending = false
+                decoded[index].commitDestinationExisted = nil
+                changed = true
             }
         }
         records = decoded
+        if changed {
+            persistNow()
+        }
     }
 
-    private func persist() {
+    private func schedulePersistence() {
+        guard pendingPersistenceTask == nil else { return }
+        pendingPersistenceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: TransferEngine.progressPersistenceDelay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.persistNow()
+        }
+    }
+
+    private func persistNow() {
+        pendingPersistenceTask?.cancel()
+        pendingPersistenceTask = nil
+        for id in Array(progressSnapshots.keys) {
+            flushProgress(for: id, token: nil)
+        }
         guard let data = try? JSONEncoder().encode(records) else { return }
         try? data.write(to: fileURL, options: .atomic)
+    }
+}
+
+private actor TransferFileReader {
+    private let handle: FileHandle
+
+    init(url: URL) throws {
+        handle = try FileHandle(forReadingFrom: url)
+    }
+
+    func read(upToCount count: Int) throws -> Data? {
+        try handle.read(upToCount: count)
+    }
+
+    func close() {
+        try? handle.close()
+    }
+}
+
+private actor TransferFileWriter {
+    private let handle: FileHandle
+
+    init(url: URL) throws {
+        handle = try FileHandle(forWritingTo: url)
+    }
+
+    func write(_ data: Data) throws {
+        try handle.write(contentsOf: data)
+    }
+
+    func close() {
+        try? handle.close()
     }
 }

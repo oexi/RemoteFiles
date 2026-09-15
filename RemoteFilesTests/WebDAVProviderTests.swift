@@ -128,4 +128,23 @@ final class WebDAVProviderTests: XCTestCase {
         let schemelessProvider = WebDAVProvider(profile: profile, credential: nil)
         XCTAssertThrowsError(try schemelessProvider.relativeRemotePath(fromDAVHref: "/file.txt"))
     }
+
+    func testChunkedReadProbeSelectsNativeDownloadWithoutHTTPProbe() async throws {
+        WebDAVTestURLProtocol.reset()
+        defer { WebDAVTestURLProtocol.reset() }
+
+        var profile = ConnectionProfile.empty(for: .webdav)
+        profile.host = "https://example.com/dav"
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [WebDAVTestURLProtocol.self]
+        let provider = WebDAVProvider(
+            profile: profile,
+            credential: nil,
+            session: URLSession(configuration: configuration)
+        )
+
+        let supportsChunkedReads = try await provider.supportsChunkedReads(path: "/file.bin")
+        XCTAssertFalse(supportsChunkedReads)
+        XCTAssertTrue(WebDAVTestURLProtocol.requestsSnapshot().isEmpty)
+    }
 }

@@ -6,6 +6,9 @@
 "Authentication" = "驗證";
 "Build" = "組建版本";
 "Cancel" = "取消";
+"Pause" = "暫停";
+"Resume" = "繼續";
+"Paused" = "已暫停";
 "Clear Finished" = "清除已完成";
 "Clear Search" = "清除搜尋";
 "Compatibility" = "相容性";

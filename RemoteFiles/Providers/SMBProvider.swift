@@ -102,6 +102,14 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         }
     }
 
+    func openReadSession(path: String, offset: UInt64) async throws -> (any RemoteChunkReadSession)? {
+        try await ensureConnected()
+        return SMBReadSession(
+            reader: client.fileReader(path: smbPath(path)),
+            offset: offset
+        )
+    }
+
 
     func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64 {
         try await ensureConnected()
@@ -150,6 +158,16 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         }
     }
 
+    /// Releases the SMB CREATE handle left by the legacy chunk writer after a
+    /// failed or cancelled transfer. The partial file is intentionally kept:
+    /// its confirmed size is the resume checkpoint used by the next attempt.
+    /// `disconnect()` also calls this cleanup path for any outstanding handles.
+    func abortChunkedUpload(path: String) async {
+        let remotePath = smbPath(path)
+        guard let fileID = chunkFileIDs.removeValue(forKey: remotePath) else { return }
+        _ = try? await client.session.close(fileId: fileID)
+    }
+
     func createDirectory(path: String) async throws {
         try await ensureConnected()
         try await client.createDirectory(path: smbPath(path))
@@ -193,3 +211,26 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 }
 
+private final class SMBReadSession: RemoteChunkReadSession, @unchecked Sendable {
+    private let reader: FileReader
+    private var offset: UInt64
+    private var isClosed = false
+
+    init(reader: FileReader, offset: UInt64) {
+        self.reader = reader
+        self.offset = offset
+    }
+
+    func read(length: Int) async throws -> Data {
+        guard length > 0, !isClosed else { return Data() }
+        let data = try await reader.read(offset: offset, length: UInt32(clamping: length))
+        offset += UInt64(data.count)
+        return data
+    }
+
+    func close() async {
+        guard !isClosed else { return }
+        isClosed = true
+        try? await reader.close()
+    }
+}

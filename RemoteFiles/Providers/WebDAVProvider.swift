@@ -82,21 +82,11 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
         throw RemoteProviderError.unsupported("This WebDAV server does not support byte-range reads.")
     }
 
-    func supportsChunkedReads(path: String) async throws -> Bool {
-        let request = try makeRequest(path: path, method: "HEAD")
-        let (_, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw RemoteProviderError.invalidResponse("Non-HTTP response.")
-        }
-        if http.statusCode == 401 || http.statusCode == 403 {
-            throw RemoteProviderError.authenticationRequired
-        }
-        guard (200..<300).contains(http.statusCode) else { return false }
-        return http.value(forHTTPHeaderField: "Accept-Ranges")?
-            .lowercased()
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .contains("bytes") == true
+    func supportsChunkedReads(path _: String) async throws -> Bool {
+        // A native URLSession download is one streaming response. Replacing it
+        // with one range request per engine chunk adds a full HTTP round trip for
+        // every chunk and is substantially slower on high-latency WebDAV hosts.
+        false
     }
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {

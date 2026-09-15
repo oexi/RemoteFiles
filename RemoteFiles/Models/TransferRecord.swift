@@ -1,7 +1,7 @@
 import Foundation
 
 enum TransferState: String, Codable, Sendable {
-    case queued, running, completed, failed, cancelled
+    case queued, running, paused, completed, failed, cancelled
 }
 
 enum TransferKind: String, Codable, Sendable {
@@ -66,6 +66,30 @@ enum TransferResumePolicy {
     }
 }
 
+enum TransferCommitDecision: Equatable, Sendable {
+    case completed
+    case resume
+    case uncertain
+}
+
+enum TransferCommitPolicy {
+    static func decision(
+        finalItem: RemoteItem?,
+        partialItem: RemoteItem?,
+        expectedBytes: UInt64,
+        destinationExistedBeforeCommit: Bool?
+    ) -> TransferCommitDecision {
+        guard let finalItem,
+              !finalItem.isDirectory,
+              let finalSize = finalItem.size,
+              finalSize == Int64(clamping: expectedBytes),
+              partialItem == nil else {
+            return .resume
+        }
+        return destinationExistedBeforeCommit == false ? .completed : .uncertain
+    }
+}
+
 struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
     let id: UUID
     let fileName: String
@@ -85,8 +109,17 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
     var kind: TransferKind?
     var bytesPerSecond: Double?
     var startedAt: Date?
+    var isResumable: Bool?
+    /// True after a complete payload has been written to the private partial
+    /// path and before the final rename is durably reflected in the record.
+    /// This lets a new engine reconcile a crash in that small commit window.
+    var commitPending: Bool?
+    /// Best-effort preflight fact used to avoid treating an unrelated existing
+    /// destination of the same size as a completed transfer after a crash.
+    var commitDestinationExisted: Bool?
 
     var operationKind: TransferKind { kind ?? .serverToServer }
+    var supportsResuming: Bool { isResumable ?? false }
 
     init(
         fileName: String,
@@ -99,7 +132,10 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         destination: String,
         totalBytes: Int64? = nil,
         sourceRevision: RemoteRevision? = nil,
-        kind: TransferKind = .serverToServer
+        kind: TransferKind = .serverToServer,
+        isResumable: Bool = false,
+        commitPending: Bool = false,
+        commitDestinationExisted: Bool? = nil
     ) {
         id = UUID()
         self.fileName = fileName
@@ -118,5 +154,8 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
         self.kind = kind
         bytesPerSecond = nil
         startedAt = nil
+        self.isResumable = isResumable
+        self.commitPending = commitPending
+        self.commitDestinationExisted = commitDestinationExisted
     }
 }

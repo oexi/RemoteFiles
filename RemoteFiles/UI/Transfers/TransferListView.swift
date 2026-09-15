@@ -18,6 +18,9 @@ struct TransferListView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Text(stateTitle(for: record.state)).font(.caption).foregroundStyle(.secondary)
+                        if canPause(record) || canResume(record) || canRetry(record) {
+                            transferControl(for: record)
+                        }
                     }
                     ProgressView(value: record.progress)
                     if let transferred = record.transferredBytes,
@@ -48,20 +51,38 @@ struct TransferListView: View {
                     }
                 }
                 .padding(.vertical, 4)
-                .swipeActions(edge: .trailing) {
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     if record.state == .running || record.state == .queued {
-                        Button(role: .destructive) { engine.cancel(record) } label: {
-                            Label("Cancel", systemImage: "xmark")
+                        if record.commitPending != true {
+                            Button(role: .destructive) { engine.cancel(record) } label: {
+                                Label("Cancel", systemImage: "xmark")
+                            }
                         }
-                    } else if record.state == .failed || record.state == .cancelled {
+                        if canPause(record) {
+                            Button { engine.pause(record) } label: {
+                                Label("Pause", systemImage: "pause")
+                            }
+                            .tint(.orange)
+                        }
+                    } else if canResume(record) {
                         Button(role: .destructive) { engine.remove(record) } label: {
                             Label("Delete", systemImage: "trash")
                         }
-                        if record.operationKind == .serverToServer {
-                            Button { engine.retry(record, using: connections) } label: {
-                                Label("Retry", systemImage: "arrow.clockwise")
-                            }
-                            .tint(.blue)
+                        Button { engine.resume(record, using: connections) } label: {
+                            Label("Resume", systemImage: "play")
+                        }
+                        .tint(.blue)
+                    } else if canRetry(record) {
+                        Button(role: .destructive) { engine.remove(record) } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                        Button { engine.retry(record, using: connections) } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                        .tint(.blue)
+                    } else if canDelete(record) {
+                        Button(role: .destructive) { engine.remove(record) } label: {
+                            Label("Delete", systemImage: "trash")
                         }
                     } else if record.state == .completed {
                         Button(role: .destructive) { engine.remove(record) } label: {
@@ -83,9 +104,71 @@ struct TransferListView: View {
         }
     }
 
+    @ViewBuilder
+    private func transferControl(for record: TransferRecord) -> some View {
+        if canPause(record) {
+            Button { engine.pause(record) } label: {
+                Image(systemName: "pause.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.orange)
+            .accessibilityLabel(controlTitle(for: record))
+        } else if canResume(record) {
+            Button { engine.resume(record, using: connections) } label: {
+                Image(systemName: "play.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.blue)
+            .accessibilityLabel(controlTitle(for: record))
+        } else if canRetry(record) {
+            Button { engine.retry(record, using: connections) } label: {
+                Image(systemName: "arrow.clockwise.circle.fill")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.blue)
+            .accessibilityLabel(controlTitle(for: record))
+        }
+    }
+
+    private func canPause(_ record: TransferRecord) -> Bool {
+        record.commitPending != true
+            && record.supportsResuming
+            && (record.state == .running || record.state == .queued)
+    }
+
+    private func canResume(_ record: TransferRecord) -> Bool {
+        guard record.supportsResuming else { return false }
+        if record.state == .paused {
+            return true
+        }
+        return record.operationKind == .serverToServer
+            && (record.state == .failed || record.state == .cancelled)
+    }
+
+    private func canRetry(_ record: TransferRecord) -> Bool {
+        record.operationKind == .serverToServer
+            && (record.state == .failed || record.state == .cancelled)
+            && !record.supportsResuming
+    }
+
+    private func canDelete(_ record: TransferRecord) -> Bool {
+        record.state == .paused || record.state == .failed || record.state == .cancelled
+    }
+
+    private func controlTitle(for record: TransferRecord) -> LocalizedStringKey {
+        if canPause(record) {
+            return "Pause"
+        }
+        if canResume(record) {
+            return "Resume"
+        }
+        return "Retry"
+    }
+
     private func icon(for record: TransferRecord) -> String {
         switch record.state {
         case .queued: return "clock"
+        case .paused: return "pause.circle.fill"
         case .completed: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.circle.fill"
         case .cancelled: return "xmark.circle"
@@ -102,6 +185,7 @@ struct TransferListView: View {
         switch state {
         case .queued: "Queued"
         case .running: "Running"
+        case .paused: "Paused"
         case .completed: "Completed"
         case .failed: "Failed"
         case .cancelled: "Cancelled"
@@ -116,4 +200,3 @@ struct TransferListView: View {
         }
     }
 }
-

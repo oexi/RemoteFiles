@@ -6,6 +6,9 @@
 "Authentication" = "Authentication";
 "Build" = "Build";
 "Cancel" = "Cancel";
+"Pause" = "Pause";
+"Resume" = "Resume";
+"Paused" = "Paused";
 "Clear Finished" = "Clear Finished";
 "Clear Search" = "Clear Search";
 "Compatibility" = "Compatibility";

@@ -69,6 +69,15 @@ final class NFSProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
         return try await client.contents(atPath: nfsPath(path), range: lower..<end, progress: nil).get()
     }
 
+    func openReadSession(path: String, offset: UInt64) async throws -> (any RemoteChunkReadSession)? {
+        try await ensureConnected()
+        return NFSReadSession(
+            client: client,
+            path: nfsPath(path),
+            offset: Int64(clamping: offset)
+        )
+    }
+
     func ensureConnected() async throws {
         if !connected { try await connect() }
     }
@@ -76,3 +85,170 @@ final class NFSProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unche
     func nfsPath(_ path: String) -> String { RemotePath.normalize(path) }
 }
 
+private final class NFSReadSession: RemoteChunkReadSession, @unchecked Sendable {
+    private let slots: DispatchSemaphore
+    private let stateLock = NSLock()
+    private var iterator: AsyncThrowingStream<Data, Error>.Iterator
+    private let continuation: AsyncThrowingStream<Data, Error>.Continuation
+    private var pendingData: Data?
+    private var pendingOffset = 0
+    private var producerTask: Task<Void, Never>?
+    private var isClosed = false
+
+    init(client: NFSClient, path: String, offset: Int64) {
+        let slots = DispatchSemaphore(value: 1)
+        let (stream, continuation) = Self.makeStream()
+        self.slots = slots
+        self.iterator = stream.makeAsyncIterator()
+        self.continuation = continuation
+        self.pendingData = nil
+
+        self.producerTask = Task<Void, Never> { [client, path, offset, continuation, slots] in
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                guard !Task.isCancelled else {
+                    continuation.finish()
+                    done.resume()
+                    return
+                }
+                client.contents(
+                    atPath: path,
+                    offset: offset,
+                    fetchedData: { _, _, data in
+                        slots.wait()
+                        let result = continuation.yield(data)
+                        switch result {
+                        case .enqueued:
+                            return true
+                        case .dropped:
+                            continuation.finish(throwing: RemoteProviderError.invalidResponse(
+                                "NFS read session buffer overflowed."
+                            ))
+                            slots.signal()
+                            return false
+                        case .terminated:
+                            slots.signal()
+                            return false
+                        }
+                    },
+                    completionHandler: { error in
+                        if let error {
+                            continuation.finish(throwing: error)
+                        } else {
+                            continuation.finish()
+                        }
+                        done.resume()
+                    }
+                )
+            }
+        }
+    }
+
+    func read(length: Int) async throws -> Data {
+        try await withTaskCancellationHandler(operation: {
+            try await readNext(length: length)
+        }, onCancel: {
+            cancel()
+        })
+    }
+
+    private func readNext(length: Int) async throws -> Data {
+        guard length > 0, !isClosedState() else { return Data() }
+        try Task.checkCancellation()
+        var result = Data()
+        result.reserveCapacity(length)
+        while !isClosedState(), result.count < length {
+            if let data = takePending(length: length - result.count) {
+                if result.isEmpty, data.count == length {
+                    return data
+                }
+                result.append(contentsOf: data)
+                continue
+            }
+            do {
+                guard let data = try await iterator.next() else {
+                    try Task.checkCancellation()
+                    return result
+                }
+                slots.signal()
+                try Task.checkCancellation()
+                guard !data.isEmpty else { continue }
+                pendingData = data
+            } catch {
+                slots.signal()
+                throw error
+            }
+        }
+        return result
+    }
+
+    func close() async {
+        let producerTask = cancel()
+        await producerTask?.value
+        clearProducerTask()
+    }
+
+    private func clearProducerTask() {
+        stateLock.lock()
+        self.producerTask = nil
+        stateLock.unlock()
+    }
+
+    @discardableResult
+    private func cancel() -> Task<Void, Never>? {
+        stateLock.lock()
+        guard !isClosed else {
+            let producerTask = self.producerTask
+            stateLock.unlock()
+            return producerTask
+        }
+        isClosed = true
+        let producerTask = self.producerTask
+        stateLock.unlock()
+
+        continuation.finish()
+        producerTask?.cancel()
+        slots.signal()
+        return producerTask
+    }
+
+    private func isClosedState() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return isClosed
+    }
+
+    private func takePending(length: Int) -> Data? {
+        guard let pendingData else { return nil }
+        let available = pendingData.count - pendingOffset
+        guard available > 0 else {
+            self.pendingData = nil
+            pendingOffset = 0
+            return nil
+        }
+
+        let count = min(length, available)
+        let result: Data
+        if pendingOffset == 0, count == pendingData.count {
+            result = pendingData
+        } else {
+            result = pendingData.subdata(in: pendingOffset..<(pendingOffset + count))
+        }
+        pendingOffset += count
+        if pendingOffset == pendingData.count {
+            self.pendingData = nil
+            pendingOffset = 0
+        }
+        return result
+    }
+
+    private static func makeStream() -> (
+        AsyncThrowingStream<Data, Error>,
+        AsyncThrowingStream<Data, Error>.Continuation
+    ) {
+        var continuation: AsyncThrowingStream<Data, Error>.Continuation!
+        let stream = AsyncThrowingStream<Data, Error>(bufferingPolicy: .bufferingOldest(1)) {
+            continuation = $0
+        }
+        return (stream, continuation)
+    }
+}

@@ -22,7 +22,8 @@ final class TransferRecordTests: XCTestCase {
             source: "Source:/source/movie.mkv",
             destination: "Destination:/dest/movie.mkv",
             totalBytes: 123456,
-            sourceRevision: sourceRevision
+            sourceRevision: sourceRevision,
+            isResumable: true
         )
 
         let decoded = try JSONDecoder().decode(
@@ -37,6 +38,8 @@ final class TransferRecordTests: XCTestCase {
         XCTAssertTrue(decoded.overwrite)
         XCTAssertEqual(decoded.totalBytes, 123456)
         XCTAssertEqual(decoded.sourceRevision, sourceRevision)
+        XCTAssertTrue(decoded.supportsResuming)
+        XCTAssertFalse(decoded.commitPending == true)
     }
 
     func testLegacyDecodeWithoutSourceRevision() throws {
@@ -92,6 +95,9 @@ final class TransferRecordTests: XCTestCase {
         object.removeValue(forKey: "kind")
         object.removeValue(forKey: "bytesPerSecond")
         object.removeValue(forKey: "startedAt")
+        object.removeValue(forKey: "isResumable")
+        object.removeValue(forKey: "commitPending")
+        object.removeValue(forKey: "commitDestinationExisted")
 
         let decoded = try JSONDecoder().decode(
             TransferRecord.self,
@@ -101,6 +107,83 @@ final class TransferRecordTests: XCTestCase {
         XCTAssertEqual(decoded.operationKind, .serverToServer)
         XCTAssertNil(decoded.bytesPerSecond)
         XCTAssertNil(decoded.startedAt)
+        XCTAssertFalse(decoded.supportsResuming)
+        XCTAssertFalse(decoded.commitPending == true)
+    }
+
+    func testCommitMarkersRoundTrip() throws {
+        var record = TransferRecord(
+            fileName: "commit.bin",
+            sourceProfileID: UUID(),
+            sourcePath: "/commit.bin",
+            destinationProfileID: UUID(),
+            destinationPath: "/commit.bin",
+            overwrite: true,
+            source: "Source:/commit.bin",
+            destination: "Destination:/commit.bin",
+            totalBytes: 10,
+            sourceRevision: RemoteRevision(
+                eTag: nil,
+                modifiedAt: Date(timeIntervalSince1970: 1),
+                size: 10,
+                opaqueIdentifier: nil
+            ),
+            isResumable: true,
+            commitPending: true,
+            commitDestinationExisted: false
+        )
+        record.transferredBytes = 10
+
+        let decoded = try JSONDecoder().decode(
+            TransferRecord.self,
+            from: JSONEncoder().encode(record)
+        )
+
+        XCTAssertTrue(decoded.commitPending == true)
+        XCTAssertEqual(decoded.commitDestinationExisted, false)
+        XCTAssertEqual(decoded.transferredBytes, 10)
+    }
+
+    func testCommitPolicyRequiresAKnownAbsentDestination() {
+        let final = RemoteItem(name: "movie.bin", path: "/movie.bin", kind: .file, size: 10)
+        let partial = RemoteItem(name: ".partial", path: "/.partial", kind: .file, size: 10)
+
+        XCTAssertEqual(
+            TransferCommitPolicy.decision(
+                finalItem: final,
+                partialItem: nil,
+                expectedBytes: 10,
+                destinationExistedBeforeCommit: false
+            ),
+            .completed
+        )
+        XCTAssertEqual(
+            TransferCommitPolicy.decision(
+                finalItem: final,
+                partialItem: nil,
+                expectedBytes: 10,
+                destinationExistedBeforeCommit: true
+            ),
+            .uncertain
+        )
+        XCTAssertEqual(
+            TransferCommitPolicy.decision(
+                finalItem: final,
+                partialItem: nil,
+                expectedBytes: 10,
+                destinationExistedBeforeCommit: nil
+            ),
+            .uncertain
+        )
+        XCTAssertEqual(
+            TransferCommitPolicy.decision(
+                finalItem: final,
+                partialItem: partial,
+                expectedBytes: 10,
+                destinationExistedBeforeCommit: false
+            ),
+            .resume
+        )
     }
 
     func testResumePolicyETagRules() {
