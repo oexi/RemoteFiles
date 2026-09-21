@@ -5,6 +5,7 @@ enum RemoteProviderError: LocalizedError, Sendable {
     case invalidConfiguration(String)
     case authenticationRequired
     case notConnected
+    case notFound(String)
     case conflict(String)
     case invalidResponse(String)
 
@@ -14,9 +15,41 @@ enum RemoteProviderError: LocalizedError, Sendable {
         case .invalidConfiguration(let message): message
         case .authenticationRequired: "Authentication is required."
         case .notConnected: "The remote server is not connected."
+        case .notFound(let message): message
         case .conflict(let message): message
         case .invalidResponse(let message): message
         }
+    }
+}
+
+extension RemoteProviderError {
+    /// Returns true only for an error that proves the requested remote item is absent.
+    ///
+    /// Providers should translate their native "no such file" errors to
+    /// `RemoteProviderError.notFound`. Native Foundation/POSIX missing-path errors
+    /// are also recognized so providers backed directly by those APIs can preserve
+    /// this contract without exposing dependency-specific error types at the protocol boundary.
+    var isNotFound: Bool {
+        if case .notFound = self { return true }
+        return false
+    }
+
+    static func isNotFound(_ error: Error) -> Bool {
+        if let providerError = error as? RemoteProviderError {
+            return providerError.isNotFound
+        }
+        if let posixError = error as? POSIXError, posixError.code == .ENOENT {
+            return true
+        }
+        if let cocoaError = error as? CocoaError, cocoaError.code == .fileNoSuchFile {
+            return true
+        }
+        if let urlError = error as? URLError, urlError.code == .fileDoesNotExist {
+            return true
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSPOSIXErrorDomain &&
+            nsError.code == Int(POSIXErrorCode.ENOENT.rawValue)
     }
 }
 

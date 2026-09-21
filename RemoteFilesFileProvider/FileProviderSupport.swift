@@ -2,66 +2,6 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-struct FileProviderPathCodec {
-    let rootPath: String
-
-    func identifier(for path: String) -> NSFileProviderItemIdentifier {
-        let normalized = RemotePath.normalize(path)
-        if normalized == RemotePath.normalize(rootPath) { return .rootContainer }
-        let encoded = Data(normalized.utf8).base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-        return NSFileProviderItemIdentifier("path:\(encoded)")
-    }
-
-    func path(for identifier: NSFileProviderItemIdentifier) throws -> String {
-        if identifier == .rootContainer { return RemotePath.normalize(rootPath) }
-        guard identifier.rawValue.hasPrefix("path:") else {
-            throw RemoteProviderError.invalidResponse("Unknown File Provider item identifier.")
-        }
-        var encoded = String(identifier.rawValue.dropFirst(5))
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        while encoded.count % 4 != 0 { encoded.append("=") }
-        guard let data = Data(base64Encoded: encoded), let value = String(data: data, encoding: .utf8) else {
-            throw RemoteProviderError.invalidResponse("Invalid File Provider item identifier.")
-        }
-        guard let path = RemotePath.confined(value, to: rootPath) else {
-            throw RemoteProviderError.invalidResponse("File Provider item path is outside the configured root.")
-        }
-        return path
-    }
-
-    func childPath(parent: String, filename: String) throws -> String {
-        guard !filename.isEmpty,
-              filename != ".",
-              filename != "..",
-              !filename.contains("/"),
-              !filename.unicodeScalars.contains(where: { $0.value == 0 }) else {
-            throw RemoteProviderError.invalidResponse("Invalid File Provider item filename.")
-        }
-        let path = RemotePath.join(parent, filename)
-        guard let confined = RemotePath.confined(path, to: rootPath),
-              confined != RemotePath.normalize(parent) else {
-            throw RemoteProviderError.invalidResponse("File Provider item path is outside the configured root.")
-        }
-        return confined
-    }
-
-    func contains(_ path: String) -> Bool {
-        RemotePath.confined(path, to: rootPath) != nil
-    }
-
-    func containsDirectChild(_ path: String, of containerPath: String) -> Bool {
-        contains(containerPath) && RemotePath.isDirectChild(path, of: containerPath)
-    }
-
-    func parentIdentifier(for path: String) -> NSFileProviderItemIdentifier {
-        identifier(for: RemotePath.parent(path))
-    }
-}
-
 final class FileProviderItem: NSObject, NSFileProviderItem {
     let itemIdentifier: NSFileProviderItemIdentifier
     let parentItemIdentifier: NSFileProviderItemIdentifier
@@ -75,9 +15,17 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 
     var typeIdentifier: String { contentType.identifier }
 
-    init(remote: RemoteItem, codec: FileProviderPathCodec, providerCapabilities: ProviderCapabilities) {
-        itemIdentifier = codec.identifier(for: remote.path)
-        parentItemIdentifier = codec.parentIdentifier(for: remote.path)
+    init(
+        remote: RemoteItem,
+        codec: FileProviderPathCodec,
+        identityStore: FileProviderIdentityStore,
+        providerCapabilities: ProviderCapabilities
+    ) throws {
+        itemIdentifier = try identityStore.identifier(for: remote.path, codec: codec)
+        parentItemIdentifier = try identityStore.identifier(
+            for: RemotePath.parent(remote.path),
+            codec: codec
+        )
         filename = remote.name
         contentType = remote.isDirectory ? .folder : (UTType(filenameExtension: (remote.name as NSString).pathExtension) ?? .data)
         documentSize = remote.size.map(NSNumber.init(value:))

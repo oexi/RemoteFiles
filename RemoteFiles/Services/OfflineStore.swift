@@ -220,7 +220,7 @@ final class OfflineStore: ObservableObject {
                 kind: item.directory ? .directory : .file,
                 size: item.size
             )
-            let target = await RemoteFileOperations.availablePastePath(
+            let target = try await RemoteFileOperations.availablePastePath(
                 for: descriptor,
                 in: parent,
                 provider: provider

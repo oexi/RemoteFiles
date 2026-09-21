@@ -21,7 +21,7 @@ struct RemotePreviewView: View {
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let localURL {
+            if localURL != nil {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         showingShare = true
@@ -48,4 +48,3 @@ struct RemotePreviewView: View {
         }
     }
 }
-

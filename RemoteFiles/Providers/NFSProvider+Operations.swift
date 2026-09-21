@@ -3,7 +3,15 @@ import Foundation
 extension NFSProvider {
     func attributes(path: String) async throws -> RemoteItem {
         try await ensureConnected()
-        let row = try await client.attributesOfItem(atPath: nfsPath(path)).get()
+        let row: [URLResourceKey: Any]
+        do {
+            row = try await client.attributesOfItem(atPath: nfsPath(path)).get()
+        } catch {
+            if RemoteProviderError.isNotFound(error) {
+                throw RemoteProviderError.notFound("The remote item was not found at \(path).")
+            }
+            throw error
+        }
         let permissions = try? await permissions(at: path)
         let name = (path as NSString).lastPathComponent
         let isDirectory = (row[.isDirectoryKey] as? NSNumber)?.boolValue ?? false
@@ -35,22 +43,41 @@ extension NFSProvider {
 
     func download(path: String, to localURL: URL) async throws {
         try await ensureConnected()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            client.downloadItem(atPath: nfsPath(path), to: localURL, progress: { _, _ in true }) { error in
-                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+        try await withProviderCancellation { complete, isCancelled -> Progress? in
+            client.downloadItem(atPath: nfsPath(path), to: localURL, progress: { _, _ in
+                !isCancelled()
+            }) { error in
+                if let error {
+                    complete(.failure(error))
+                } else {
+                    complete(.success(()))
+                }
             }
+            return nil
         }
     }
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
         try await ensureConnected()
-        if !overwrite, (try? await attributes(path: path)) != nil {
-            throw RemoteProviderError.conflict("An item already exists at \(path).")
-        }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            client.uploadItem(at: localURL, toPath: nfsPath(path), progress: { _ in true }) { error in
-                if let error { continuation.resume(throwing: error) } else { continuation.resume() }
+        if !overwrite {
+            do {
+                _ = try await attributes(path: path)
+                throw RemoteProviderError.conflict("An item already exists at \(path).")
+            } catch {
+                guard RemoteProviderError.isNotFound(error) else { throw error }
             }
+        }
+        try await withProviderCancellation { complete, isCancelled -> Progress? in
+            client.uploadItem(at: localURL, toPath: nfsPath(path), progress: { _ in
+                !isCancelled()
+            }) { error in
+                if let error {
+                    complete(.failure(error))
+                } else {
+                    complete(.success(()))
+                }
+            }
+            return nil
         }
     }
 
@@ -66,8 +93,13 @@ extension NFSProvider {
 
     func move(from: String, to: String, overwrite: Bool) async throws {
         try await ensureConnected()
-        if !overwrite, (try? await attributes(path: to)) != nil {
-            throw RemoteProviderError.conflict("An item already exists at \(to).")
+        if !overwrite {
+            do {
+                _ = try await attributes(path: to)
+                throw RemoteProviderError.conflict("An item already exists at \(to).")
+            } catch {
+                guard RemoteProviderError.isNotFound(error) else { throw error }
+            }
         }
         try await bridge { done in
             client.moveItem(atPath: nfsPath(from), toPath: nfsPath(to), completionHandler: done)
@@ -90,4 +122,3 @@ extension NFSProvider {
         }
     }
 }
-

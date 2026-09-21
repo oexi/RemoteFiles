@@ -5,8 +5,35 @@ actor FileProviderSnapshotStore {
     struct Snapshot: Codable {
         let anchorData: Data
         let fingerprints: [String: String]
+        /// The item identifier observed for each path.  This was added after
+        /// the original path-only snapshot format; decoding keeps an empty
+        /// map for older snapshots so their deletion IDs remain compatible.
+        let identifiers: [String: String]
 
         var anchor: NSFileProviderSyncAnchor { NSFileProviderSyncAnchor(anchorData) }
+
+        init(
+            anchorData: Data,
+            fingerprints: [String: String],
+            identifiers: [String: String] = [:]
+        ) {
+            self.anchorData = anchorData
+            self.fingerprints = fingerprints
+            self.identifiers = identifiers
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case anchorData
+            case fingerprints
+            case identifiers
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            anchorData = try container.decode(Data.self, forKey: .anchorData)
+            fingerprints = try container.decode([String: String].self, forKey: .fingerprints)
+            identifiers = try container.decodeIfPresent([String: String].self, forKey: .identifiers) ?? [:]
+        }
     }
 
     private struct State: Codable {
@@ -44,11 +71,13 @@ actor FileProviderSnapshotStore {
     func save(
         profileID: UUID,
         containerIdentifier: NSFileProviderItemIdentifier,
-        items: [RemoteItem]
+        items: [RemoteItem],
+        identifiers: [String: String] = [:]
     ) throws -> Snapshot {
         let snapshot = Snapshot(
             anchorData: Data(UUID().uuidString.utf8),
-            fingerprints: Self.fingerprints(for: items)
+            fingerprints: Self.fingerprints(for: items),
+            identifiers: identifiers
         )
         var state = loadState(profileID: profileID, containerIdentifier: containerIdentifier)
             ?? State(snapshots: [])

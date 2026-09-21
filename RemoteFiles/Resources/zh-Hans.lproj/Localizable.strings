@@ -120,3 +120,8 @@
 "SMB" = "SMB";
 "WebDAV" = "WebDAV";
 "SSH Host Key" = "SSH 主机密钥";
+"Cache" = "缓存";
+"Cache Usage" = "缓存占用";
+"Clear Cache" = "清除缓存";
+"Cached previews and materialized files. Offline files and active transfers are not affected." = "缓存的预览和已下载文件。不会影响离线文件和进行中的传输。";
+"Calculating…" = "正在计算…";

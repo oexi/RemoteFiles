@@ -153,7 +153,7 @@ final class BrowserViewModel: ObservableObject {
                     continue
                 }
 
-                let target = await RemoteFileOperations.availablePastePath(
+                let target = try await RemoteFileOperations.availablePastePath(
                     for: item,
                     in: currentPath,
                     provider: destination

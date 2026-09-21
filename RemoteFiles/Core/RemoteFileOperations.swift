@@ -38,9 +38,14 @@ enum RemoteFileOperations {
         for item: RemoteItem,
         in parent: String,
         provider: any RemoteFileProvider
-    ) async -> String {
+    ) async throws -> String {
         let direct = RemotePath.join(parent, item.name)
-        if (try? await provider.attributes(path: direct)) == nil { return direct }
+        do {
+            _ = try await provider.attributes(path: direct)
+        } catch {
+            guard RemoteProviderError.isNotFound(error) else { throw error }
+            return direct
+        }
 
         let split = splitName(item.name, isDirectory: item.isDirectory)
         var index = 1
@@ -48,7 +53,12 @@ enum RemoteFileOperations {
             let suffix = index == 1 ? " copy" : " copy \(index)"
             let candidateName = split.base + suffix + split.extensionPart
             let candidate = RemotePath.join(parent, candidateName)
-            if (try? await provider.attributes(path: candidate)) == nil { return candidate }
+            do {
+                _ = try await provider.attributes(path: candidate)
+            } catch {
+                guard RemoteProviderError.isNotFound(error) else { throw error }
+                return candidate
+            }
             index += 1
         }
     }

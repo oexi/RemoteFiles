@@ -3,7 +3,7 @@ import NFSKit
 
 final class NFSProvider: RemoteFileProvider, RemoteChunkReadableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
-    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .permissions, .symbolicLinks])
+    let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .permissions, .symbolicLinks])
     let client: NFSClient
     var connected = false
 
@@ -126,6 +126,12 @@ private final class NFSReadSession: RemoteChunkReadSession, @unchecked Sendable 
                             slots.signal()
                             return false
                         case .terminated:
+                            slots.signal()
+                            return false
+                        @unknown default:
+                            continuation.finish(throwing: RemoteProviderError.invalidResponse(
+                                "NFS returned an unsupported stream buffering result."
+                            ))
                             slots.signal()
                             return false
                         }

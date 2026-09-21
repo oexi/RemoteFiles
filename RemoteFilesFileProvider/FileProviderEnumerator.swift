@@ -5,12 +5,14 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
     private let profile: ConnectionProfile
     private let containerIdentifier: NSFileProviderItemIdentifier
     private let codec: FileProviderPathCodec
+    private let identityStore: FileProviderIdentityStore
     private var task: Task<Void, Never>?
 
     init(profile: ConnectionProfile, containerIdentifier: NSFileProviderItemIdentifier) {
         self.profile = profile
         self.containerIdentifier = containerIdentifier
         codec = FileProviderPathCodec(rootPath: profile.initialPath)
+        identityStore = FileProviderIdentityStore(profileID: profile.id)
     }
 
     func invalidate() {
@@ -26,14 +28,31 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 let provider = try ProviderFactory.make(for: profile, credential: credential)
                 try await provider.connect()
                 defer { Task { await provider.disconnect() } }
-                let path = try codec.path(for: containerIdentifier)
+                let path = try identityStore.path(for: containerIdentifier, codec: codec)
                 let listedItems = try await provider.list(path: path)
                 let remoteItems = listedItems.filter { codec.containsDirectChild($0.path, of: path) }
-                let items = remoteItems.map { FileProviderItem(remote: $0, codec: codec, providerCapabilities: provider.capabilities) }
+                try identityStore.register(
+                    paths: remoteItems.map(\.path),
+                    codec: codec
+                )
+                let items = try remoteItems.map {
+                    try FileProviderItem(
+                        remote: $0,
+                        codec: codec,
+                        identityStore: identityStore,
+                        providerCapabilities: provider.capabilities
+                    )
+                }
+                let identifiers = Dictionary(
+                    uniqueKeysWithValues: zip(remoteItems, items).map {
+                        ($0.0.path, $0.1.itemIdentifier.rawValue)
+                    }
+                )
                 _ = try await FileProviderSnapshotStore.shared.save(
                     profileID: profile.id,
                     containerIdentifier: containerIdentifier,
-                    items: remoteItems
+                    items: remoteItems,
+                    identifiers: identifiers
                 )
                 guard !Task.isCancelled else { return }
                 let pageSize = max(1, observer.suggestedPageSize ?? 200)
@@ -77,17 +96,43 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 try await provider.connect()
                 defer { Task { await provider.disconnect() } }
 
-                let path = try codec.path(for: containerIdentifier)
+                let path = try identityStore.path(for: containerIdentifier, codec: codec)
                 let listedItems = try await provider.list(path: path)
                 let remoteItems = listedItems.filter { codec.containsDirectChild($0.path, of: path) }
+                try identityStore.register(
+                    paths: remoteItems.map(\.path),
+                    codec: codec
+                )
                 let currentFingerprints = FileProviderSnapshotStore.fingerprints(for: remoteItems)
+                let currentItems = try remoteItems.map {
+                    try FileProviderItem(
+                        remote: $0,
+                        codec: codec,
+                        identityStore: identityStore,
+                        providerCapabilities: provider.capabilities
+                    )
+                }
+                let currentIdentifiersByPath = Dictionary(
+                    uniqueKeysWithValues: zip(remoteItems, currentItems).map {
+                        ($0.0.path, $0.1.itemIdentifier.rawValue)
+                    }
+                )
+                let currentIdentifiers = Set(currentIdentifiersByPath.values)
 
                 let changedRemote = remoteItems.filter { item in
-                    previous.fingerprints[item.path] != currentFingerprints[item.path]
+                    let previousIdentifier = previous.identifiers[item.path]
+                        ?? codec.identifier(for: item.path).rawValue
+                    return previous.fingerprints[item.path] != currentFingerprints[item.path]
+                        || previousIdentifier != currentIdentifiersByPath[item.path]
                 }
                 if !changedRemote.isEmpty {
-                    let changedItems = changedRemote.map {
-                        FileProviderItem(remote: $0, codec: codec, providerCapabilities: provider.capabilities)
+                    let changedItems = try changedRemote.map {
+                        try FileProviderItem(
+                            remote: $0,
+                            codec: codec,
+                            identityStore: identityStore,
+                            providerCapabilities: provider.capabilities
+                        )
                     }
                     let batchSize = max(1, observer.suggestedBatchSize ?? 200)
                     var index = 0
@@ -101,15 +146,19 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
 
                 // Keep old out-of-root keys here so a snapshot created before the
                 // boundary fix can still remove stale items from the Files UI.
-                let deleted = previous.fingerprints.keys
-                    .filter { currentFingerprints[$0] == nil }
-                    .map(codec.identifier(for:))
+                let deleted = fileProviderDeletedItemIdentifiers(
+                    previousFingerprints: previous.fingerprints,
+                    previousIdentifiers: previous.identifiers,
+                    currentIdentifiers: currentIdentifiers,
+                    codec: codec
+                )
                 if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
 
                 let snapshot = try await FileProviderSnapshotStore.shared.save(
                     profileID: profile.id,
                     containerIdentifier: containerIdentifier,
-                    items: remoteItems
+                    items: remoteItems,
+                    identifiers: currentIdentifiersByPath
                 )
                 guard !Task.isCancelled else { return }
                 observer.finishEnumeratingChanges(upTo: snapshot.anchor, moreComing: false)

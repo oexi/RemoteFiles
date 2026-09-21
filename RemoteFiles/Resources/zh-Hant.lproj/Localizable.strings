@@ -120,3 +120,8 @@
 "SMB" = "SMB";
 "WebDAV" = "WebDAV";
 "SSH Host Key" = "SSH 主機金鑰";
+"Cache" = "快取";
+"Cache Usage" = "快取用量";
+"Clear Cache" = "清除快取";
+"Cached previews and materialized files. Offline files and active transfers are not affected." = "快取的預覽與已下載檔案。不會影響離線檔案和進行中的傳輸。";
+"Calculating…" = "正在計算…";

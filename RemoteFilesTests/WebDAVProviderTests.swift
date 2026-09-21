@@ -147,4 +147,93 @@ final class WebDAVProviderTests: XCTestCase {
         XCTAssertFalse(supportsChunkedReads)
         XCTAssertTrue(WebDAVTestURLProtocol.requestsSnapshot().isEmpty)
     }
+
+    func testAttributesMapsHTTP404ToNotFound() async {
+        WebDAVMissingItemURLProtocol.statusCode = 404
+        defer { WebDAVMissingItemURLProtocol.statusCode = 207 }
+
+        var profile = ConnectionProfile.empty(for: .webdav)
+        profile.host = "https://example.com/dav"
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [WebDAVMissingItemURLProtocol.self]
+        let provider = WebDAVProvider(
+            profile: profile,
+            credential: nil,
+            session: URLSession(configuration: configuration)
+        )
+
+        do {
+            _ = try await provider.attributes(path: "/missing.txt")
+            XCTFail("Expected a missing WebDAV item")
+        } catch let error as RemoteProviderError {
+            guard case .notFound = error else {
+                return XCTFail("Expected RemoteProviderError.notFound, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testAttributesMapsMissingItemFromSuccessfulParentListingToNotFound() async {
+        WebDAVMissingItemURLProtocol.statusCode = 207
+
+        var profile = ConnectionProfile.empty(for: .webdav)
+        profile.host = "https://example.com/dav"
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [WebDAVMissingItemURLProtocol.self]
+        let provider = WebDAVProvider(
+            profile: profile,
+            credential: nil,
+            session: URLSession(configuration: configuration)
+        )
+
+        do {
+            _ = try await provider.attributes(path: "/missing.txt")
+            XCTFail("Expected a missing WebDAV item")
+        } catch let error as RemoteProviderError {
+            guard case .notFound = error else {
+                return XCTFail("Expected RemoteProviderError.notFound, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+}
+
+private final class WebDAVMissingItemURLProtocol: URLProtocol {
+    static var statusCode = 207
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+                  url: url,
+                  statusCode: Self.statusCode,
+                  httpVersion: "HTTP/1.1",
+                  headerFields: ["Content-Type": "application/xml"]
+              ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        let body = Data("""
+            <?xml version="1.0" encoding="utf-8"?>
+            <d:multistatus xmlns:d="DAV:">
+              <d:response>
+                <d:href>/dav/other.txt</d:href>
+                <d:propstat><d:prop>
+                  <d:displayname>other.txt</d:displayname>
+                </d:prop></d:propstat>
+              </d:response>
+            </d:multistatus>
+            """.utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() { }
 }

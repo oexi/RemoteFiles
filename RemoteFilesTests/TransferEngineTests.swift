@@ -145,6 +145,162 @@ final class TransferEngineTests: XCTestCase {
         XCTAssertEqual(source.readOffsets, [0])
     }
 
+    func testServerToServerFailsWhenFinalDestinationStatThrows() async throws {
+        let totalBytes = 1024
+        let item = verificationItem(size: totalBytes, name: "stat-error.bin")
+        let source = ResumeCheckpointSourceProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            item: item
+        )
+        let destination = FinalVerificationDestinationProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            destinationPath: item.path,
+            finalStat: .error("Injected final destination stat failure.")
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesFinalStatErrorTests-\(UUID())", isDirectory: true)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        engine.copyFile(item: item, from: source, to: destination, destinationPath: item.path)
+        try await waitUntil { engine.records.first?.state == .failed }
+
+        let record = try XCTUnwrap(engine.records.first)
+        XCTAssertEqual(record.errorMessage, "Injected final destination stat failure.")
+        XCTAssertTrue(record.commitPending == true)
+        XCTAssertNotEqual(record.state, .completed)
+    }
+
+    func testServerToServerFailsWhenFinalDestinationSizeIsMissing() async throws {
+        let totalBytes = 1024
+        let item = verificationItem(size: totalBytes, name: "missing-size.bin")
+        let source = ResumeCheckpointSourceProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            item: item
+        )
+        let destination = FinalVerificationDestinationProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            destinationPath: item.path,
+            finalStat: .missingSize
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesFinalMissingSizeTests-\(UUID())", isDirectory: true)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        engine.copyFile(item: item, from: source, to: destination, destinationPath: item.path)
+        try await waitUntil { engine.records.first?.state == .failed }
+
+        let record = try XCTUnwrap(engine.records.first)
+        XCTAssertEqual(
+            record.errorMessage,
+            "Transfer verification failed because the destination size is unavailable."
+        )
+        XCTAssertTrue(record.commitPending == true)
+    }
+
+    func testServerToServerFailsWhenFinalDestinationSizeDoesNotMatch() async throws {
+        let totalBytes = 1024
+        let item = verificationItem(size: totalBytes, name: "size-mismatch.bin")
+        let source = ResumeCheckpointSourceProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            item: item
+        )
+        let destination = FinalVerificationDestinationProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            destinationPath: item.path,
+            finalStat: .size(Int64(totalBytes - 1))
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesFinalSizeMismatchTests-\(UUID())", isDirectory: true)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        engine.copyFile(item: item, from: source, to: destination, destinationPath: item.path)
+        try await waitUntil { engine.records.first?.state == .failed }
+
+        let record = try XCTUnwrap(engine.records.first)
+        XCTAssertEqual(
+            record.errorMessage,
+            "Transfer verification failed: expected \(totalBytes) bytes but destination reports \(totalBytes - 1) bytes."
+        )
+        XCTAssertTrue(record.commitPending == true)
+    }
+
+    func testServerToServerCompletesWhenFinalDestinationSizeMatches() async throws {
+        let totalBytes = 1024
+        let item = verificationItem(size: totalBytes, name: "verified.bin")
+        let source = ResumeCheckpointSourceProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            item: item
+        )
+        let destination = FinalVerificationDestinationProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            destinationPath: item.path,
+            finalStat: .size(Int64(totalBytes))
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesFinalStatSuccessTests-\(UUID())", isDirectory: true)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        engine.copyFile(item: item, from: source, to: destination, destinationPath: item.path)
+        try await waitUntil { engine.records.first?.state == .completed }
+
+        let record = try XCTUnwrap(engine.records.first)
+        XCTAssertEqual(record.state, .completed)
+        XCTAssertEqual(record.transferredBytes, UInt64(totalBytes))
+        XCTAssertEqual(record.progress, 1)
+        XCTAssertFalse(record.commitPending == true)
+        XCTAssertEqual(destination.writtenBytes, totalBytes)
+    }
+
+    func testServerToServerUsesDownloadedSizeWhenSourceSizeIsMissing() async throws {
+        let item = verificationItem(size: nil, name: "unknown-size.bin")
+        let source = ResumeCheckpointSourceProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            item: item
+        )
+        let destination = FinalVerificationDestinationProvider(
+            profile: ConnectionProfile.empty(for: .sftp),
+            destinationPath: item.path,
+            finalStat: .size(0)
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesMissingSourceSizeTests-\(UUID())", isDirectory: true)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        engine.copyFile(item: item, from: source, to: destination, destinationPath: item.path)
+        try await waitUntil { engine.records.first?.state == .completed }
+
+        let record = try XCTUnwrap(engine.records.first)
+        XCTAssertEqual(record.state, .completed)
+        XCTAssertEqual(record.totalBytes, 0)
+        XCTAssertEqual(record.transferredBytes, 0)
+        XCTAssertEqual(record.progress, 1)
+        XCTAssertFalse(record.commitPending == true)
+    }
+
+    private func verificationItem(size: Int, name: String) -> RemoteItem {
+        verificationItem(size: Int64(size), name: name)
+    }
+
+    private func verificationItem(size: Int64?, name: String) -> RemoteItem {
+        RemoteItem(
+            name: name,
+            path: "/\(name)",
+            kind: .file,
+            size: size,
+            revision: RemoteRevision(
+                eTag: nil,
+                modifiedAt: Date(timeIntervalSince1970: 1),
+                size: size,
+                opaqueIdentifier: nil
+            )
+        )
+    }
+
     func testPauseAndCancelDuringFinalRenameCannotOverrideCommittedTransfer() async throws {
         let sourceGate = TransferDownloadGate()
         sourceGate.release()
@@ -266,7 +422,82 @@ final class TransferEngineTests: XCTestCase {
         gate.release()
         try await upload.value
         XCTAssertTrue(destination.didUpload)
+        XCTAssertEqual(destination.uploadedPath, "/native.bin")
         XCTAssertEqual(engine.records.first?.state, .completed)
+    }
+
+    func testNativeMoveUploadCancellationRemovesOnlyPartialWithoutMovingFinal() async throws {
+        let gate = TransferDownloadGate()
+        let data = Data(repeating: 0x61, count: 1024)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesNativeStagingCancelTests-\(UUID())", isDirectory: true)
+        let localURL = directory.appendingPathComponent("staged.bin")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: localURL)
+        let destination = StagedNativeUploadProvider(
+            profile: ConnectionProfile.empty(for: .webdav),
+            gate: gate
+        )
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        let upload = Task {
+            try await engine.uploadFile(localURL: localURL, to: destination, destinationPath: "/staged.bin")
+        }
+        defer {
+            gate.release()
+            upload.cancel()
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        try await waitUntil { destination.isWaiting }
+        let running = try XCTUnwrap(engine.records.first)
+        engine.cancel(running)
+        gate.release()
+
+        do {
+            try await upload.value
+            XCTFail("Cancelling a staged native upload should throw cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        let record = try XCTUnwrap(engine.records.first)
+        let partialPath = RemotePath.join(
+            RemotePath.parent(record.destinationPath),
+            ".remotefiles-\(record.id.uuidString.lowercased()).partial"
+        )
+        XCTAssertEqual(record.state, .cancelled)
+        XCTAssertEqual(destination.uploadedPaths, [partialPath])
+        XCTAssertTrue(destination.movedPaths.isEmpty)
+        XCTAssertEqual(destination.removedPaths, [partialPath])
+        XCTAssertNil(destination.data(at: record.destinationPath))
+    }
+
+    func testNativeMoveUploadStagesThenMovesToFinalDestination() async throws {
+        let data = Data(repeating: 0x62, count: 4096)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesNativeStagingSuccessTests-\(UUID())", isDirectory: true)
+        let localURL = directory.appendingPathComponent("staged.bin")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: localURL)
+        let destination = StagedNativeUploadProvider(
+            profile: ConnectionProfile.empty(for: .webdav)
+        )
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        try await engine.uploadFile(localURL: localURL, to: destination, destinationPath: "/staged.bin")
+
+        let record = try XCTUnwrap(engine.records.first)
+        let partialPath = RemotePath.join(
+            RemotePath.parent(record.destinationPath),
+            ".remotefiles-\(record.id.uuidString.lowercased()).partial"
+        )
+        XCTAssertEqual(record.state, .completed)
+        XCTAssertEqual(destination.uploadedPaths, [partialPath])
+        XCTAssertEqual(destination.movedPaths, [[partialPath, "/staged.bin"]])
+        XCTAssertTrue(destination.removedPaths.isEmpty)
+        XCTAssertEqual(destination.data(at: "/staged.bin"), data)
+        XCTAssertNil(destination.data(at: partialPath))
     }
 
     func testFailedLocalLegacyUploadAbortsAndRemovesOnlyOwnedPartial() async throws {
@@ -811,7 +1042,9 @@ private final class ResumeCheckpointSourceProvider: RemoteFileProvider, RemoteCh
     func connect() async throws { }
     func list(path: String) async throws -> [RemoteItem] { [] }
     func attributes(path: String) async throws -> RemoteItem { item }
-    func download(path: String, to localURL: URL) async throws { }
+    func download(path: String, to localURL: URL) async throws {
+        try data.write(to: localURL)
+    }
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws { }
 
     func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
@@ -880,6 +1113,99 @@ private final class ResumeCheckpointDestinationProvider: RemoteFileProvider, Rem
     func writeChunk(path: String, data: Data, offset: UInt64) async throws { }
     func finishChunkedUpload(path: String) async throws { }
     func move(from: String, to: String, overwrite: Bool) async throws { }
+}
+
+private enum FinalVerificationStat: Sendable {
+    case error(String)
+    case missingSize
+    case size(Int64)
+}
+
+private final class FinalVerificationDestinationProvider: RemoteFileProvider, RemoteChunkWritableProvider, @unchecked Sendable {
+    let profile: ConnectionProfile
+    let capabilities = ProviderCapabilities([.list, .read, .write, .move, .randomWrite])
+    private let destinationPath: String
+    private let finalStat: FinalVerificationStat
+    private let lock = NSLock()
+    private var dataStorage = Data()
+    private var movedStorage = false
+
+    init(
+        profile: ConnectionProfile,
+        destinationPath: String,
+        finalStat: FinalVerificationStat
+    ) {
+        self.profile = profile
+        self.destinationPath = destinationPath
+        self.finalStat = finalStat
+    }
+
+    var writtenBytes: Int {
+        withTestLock(lock) { dataStorage.count }
+    }
+
+    func connect() async throws { }
+    func list(path: String) async throws -> [RemoteItem] { [] }
+    func download(path: String, to localURL: URL) async throws { }
+    func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
+        let data = try Data(contentsOf: localURL)
+        withTestLock(lock) {
+            dataStorage = data
+            movedStorage = true
+        }
+    }
+
+    func attributes(path: String) async throws -> RemoteItem {
+        if path.hasSuffix(".partial") {
+            let partialSize = withTestLock(lock) { dataStorage.count }
+            return RemoteItem(
+                name: ".partial",
+                path: path,
+                kind: .file,
+                size: Int64(partialSize)
+            )
+        }
+
+        let moved = withTestLock(lock) { movedStorage }
+        guard path == destinationPath, moved else {
+            throw RemoteProviderError.invalidResponse("The destination item was not found.")
+        }
+        switch finalStat {
+        case .error(let message):
+            throw RemoteProviderError.invalidResponse(message)
+        case .missingSize:
+            return RemoteItem(name: "verified", path: path, kind: .file, size: nil)
+        case .size(let size):
+            return RemoteItem(name: "verified", path: path, kind: .file, size: size)
+        }
+    }
+
+    func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64 {
+        withTestLock(lock) {
+            dataStorage = Data()
+            movedStorage = false
+        }
+        return 0
+    }
+
+    func writeChunk(path: String, data: Data, offset: UInt64) async throws {
+        withTestLock(lock) {
+            let start = Int(offset)
+            if dataStorage.count < start + data.count {
+                dataStorage.append(Data(repeating: 0, count: start + data.count - dataStorage.count))
+            }
+            dataStorage.replaceSubrange(start..<(start + data.count), with: data)
+        }
+    }
+
+    func finishChunkedUpload(path: String) async throws { }
+
+    func move(from: String, to: String, overwrite: Bool) async throws {
+        guard to == destinationPath else {
+            throw RemoteProviderError.invalidResponse("The destination move path was unexpected.")
+        }
+        withTestLock(lock) { movedStorage = true }
+    }
 }
 
 private final class BlockingMoveDestinationProvider: RemoteFileProvider, RemoteChunkWritableProvider, @unchecked Sendable {
@@ -992,10 +1318,11 @@ private final class FailingLegacyUploadProvider: RemoteFileProvider, RemoteChunk
 
 private final class BlockingNativeUploadProvider: RemoteFileProvider, @unchecked Sendable {
     let profile: ConnectionProfile
-    let capabilities = ProviderCapabilities.basicReadWrite
+    let capabilities = ProviderCapabilities([.list, .read, .write])
     private let gate: TransferDownloadGate
     private let lock = NSLock()
     private var didUploadStorage = false
+    private var uploadedPathStorage: String?
 
     init(profile: ConnectionProfile, gate: TransferDownloadGate) {
         self.profile = profile
@@ -1006,12 +1333,104 @@ private final class BlockingNativeUploadProvider: RemoteFileProvider, @unchecked
         withTestLock(lock) { didUploadStorage }
     }
 
+    var uploadedPath: String? {
+        withTestLock(lock) { uploadedPathStorage }
+    }
+
     func connect() async throws { }
     func list(path: String) async throws -> [RemoteItem] { [] }
     func download(path: String, to localURL: URL) async throws { }
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
         await gate.wait()
-        withTestLock(lock) { didUploadStorage = true }
+        withTestLock(lock) {
+            didUploadStorage = true
+            uploadedPathStorage = path
+        }
+    }
+}
+
+private final class StagedNativeUploadProvider: RemoteFileProvider, @unchecked Sendable {
+    let profile: ConnectionProfile
+    let capabilities = ProviderCapabilities([.list, .read, .write, .move])
+    private let gate: TransferDownloadGate?
+    private let lock = NSLock()
+    private var storage: [String: Data] = [:]
+    private var uploadedPathsStorage: [String] = []
+    private var movedPathsStorage: [[String]] = []
+    private var removedPathsStorage: [String] = []
+
+    init(profile: ConnectionProfile, gate: TransferDownloadGate? = nil) {
+        self.profile = profile
+        self.gate = gate
+    }
+
+    var isWaiting: Bool {
+        gate?.isWaiting == true
+    }
+
+    var uploadedPaths: [String] {
+        withTestLock(lock) { uploadedPathsStorage }
+    }
+
+    var movedPaths: [[String]] {
+        withTestLock(lock) { movedPathsStorage }
+    }
+
+    var removedPaths: [String] {
+        withTestLock(lock) { removedPathsStorage }
+    }
+
+    func data(at path: String) -> Data? {
+        withTestLock(lock) { storage[path] }
+    }
+
+    func connect() async throws { }
+
+    func list(path: String) async throws -> [RemoteItem] {
+        withTestLock(lock) {
+            storage.compactMap { itemPath, data in
+                guard RemotePath.parent(itemPath) == RemotePath.normalize(path) else { return nil }
+                return RemoteItem(
+                    name: (itemPath as NSString).lastPathComponent,
+                    path: itemPath,
+                    kind: .file,
+                    size: Int64(data.count)
+                )
+            }
+        }
+    }
+
+    func download(path: String, to localURL: URL) async throws { }
+
+    func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
+        await gate?.wait()
+        let data = try Data(contentsOf: localURL)
+        withTestLock(lock) {
+            uploadedPathsStorage.append(path)
+            storage[path] = data
+        }
+    }
+
+    func move(from: String, to: String, overwrite: Bool) async throws {
+        let data = withTestLock(lock) { storage[from] }
+        guard let data else {
+            throw RemoteProviderError.notFound("The staged upload was not found.")
+        }
+        if !overwrite, withTestLock(lock, { storage[to] != nil }) {
+            throw RemoteProviderError.conflict("An item already exists at \(to).")
+        }
+        withTestLock(lock) {
+            storage.removeValue(forKey: from)
+            storage[to] = data
+            movedPathsStorage.append([from, to])
+        }
+    }
+
+    func remove(path: String, isDirectory: Bool) async throws {
+        withTestLock(lock) {
+            storage.removeValue(forKey: path)
+            removedPathsStorage.append(path)
+        }
     }
 }
 
@@ -1232,7 +1651,7 @@ private final class BlockingDownloadProvider: RemoteFileProvider, @unchecked Sen
 
 private final class NoopTransferProvider: RemoteFileProvider, @unchecked Sendable {
     let profile: ConnectionProfile
-    let capabilities = ProviderCapabilities.basicReadWrite
+    let capabilities = ProviderCapabilities([.list, .read, .write])
 
     init(profile: ConnectionProfile) {
         self.profile = profile

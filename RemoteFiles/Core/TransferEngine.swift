@@ -386,6 +386,7 @@ final class TransferEngine: ObservableObject {
                 : .restart
             let partialPath = streamPartialPath(for: destinationPath, recordID: id)
             var alreadyCommitted = false
+            var expectedBytesForVerification = item.size
             if currentRecord?.commitPending == true,
                let total = item.size, total >= 0,
                case .resume = decision {
@@ -419,7 +420,10 @@ final class TransferEngine: ObservableObject {
 
             if !alreadyCommitted, canStream, case .resume = decision,
                let total = item.size, total >= 0,
-               let partialItem = try? await destination.attributes(path: partialPath) {
+               let partialItem = try await destinationItemIfPresent(
+                   path: partialPath,
+                   on: destination
+               ) {
                 guard !partialItem.isDirectory else {
                     throw RemoteProviderError.conflict("The transfer partial path is occupied by a directory.")
                 }
@@ -435,7 +439,10 @@ final class TransferEngine: ObservableObject {
                     overwritePartial = true
                 }
             } else if !alreadyCommitted, canStream, decision == .restart,
-                      let partialItem = try? await destination.attributes(path: partialPath) {
+                      let partialItem = try await destinationItemIfPresent(
+                          path: partialPath,
+                          on: destination
+                      ) {
                 guard !partialItem.isDirectory else {
                     throw RemoteProviderError.conflict("The transfer partial path is occupied by a directory.")
                 }
@@ -496,11 +503,22 @@ final class TransferEngine: ObservableObject {
                 defer { try? FileManager.default.removeItem(at: tempURL) }
                 try await source.download(path: item.path, to: tempURL)
                 try checkExecution(token, for: id)
+                let downloadedSize = try tempURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+                if let sourceSize = item.size, sourceSize >= 0,
+                   downloadedSize.map(Int64.init) != sourceSize {
+                    throw RemoteProviderError.invalidResponse(
+                        "The source download size did not match the advertised size."
+                    )
+                }
+                if expectedBytesForVerification == nil {
+                    expectedBytesForVerification = downloadedSize.map(Int64.init)
+                }
                 update(id, token: token) { $0.progress = 0.55 }
                 try await destination.upload(from: tempURL, to: destinationPath, overwrite: overwrite)
-                if let total = item.size, total > 0 {
+                if let total = expectedBytesForVerification, total >= 0 {
                     update(id, token: token) {
                         $0.transferredBytes = UInt64(total)
+                        $0.totalBytes = total
                         let elapsed = Date().timeIntervalSince(startedAt)
                         if elapsed >= 0.2 {
                             $0.bytesPerSecond = Double(total) / elapsed
@@ -510,14 +528,11 @@ final class TransferEngine: ObservableObject {
             }
             try checkExecution(token, for: id)
             try checkPause(for: id, token: token)
-            if let expected = item.size,
-               let destinationItem = try? await destination.attributes(path: destinationPath),
-               let actual = destinationItem.size,
-               expected != actual {
-                throw RemoteProviderError.invalidResponse(
-                    "Transfer verification failed: expected \(expected) bytes but destination reports \(actual) bytes."
-                )
-            }
+            try await verifyCompletedDestination(
+                expectedBytes: expectedBytesForVerification,
+                destination: destination,
+                destinationPath: destinationPath
+            )
             try checkExecution(token, for: id)
             update(id, token: token) {
                 $0.state = .completed
@@ -549,6 +564,40 @@ final class TransferEngine: ObservableObject {
         committing.remove(id)
         await destination.disconnect()
         if disconnectSource { await source.disconnect() }
+    }
+
+    private func verifyCompletedDestination(
+        expectedBytes: Int64?,
+        destination: any RemoteFileProvider,
+        destinationPath: String
+    ) async throws {
+        guard let expectedBytes, expectedBytes >= 0 else {
+            throw RemoteProviderError.invalidResponse(
+                "Transfer verification failed because the expected transfer size is unavailable."
+            )
+        }
+
+        // Do not turn a failed final stat into a successful transfer. In
+        // particular, a stream copy may already have set commitPending before
+        // the rename; propagating this error preserves that marker so a retry
+        // can reconcile the commit window instead of starting from an
+        // unverified completed state.
+        let destinationItem = try await destination.attributes(path: destinationPath)
+        guard !destinationItem.isDirectory else {
+            throw RemoteProviderError.invalidResponse(
+                "Transfer verification failed because the destination is a directory."
+            )
+        }
+        guard let destinationSize = destinationItem.size, destinationSize >= 0 else {
+            throw RemoteProviderError.invalidResponse(
+                "Transfer verification failed because the destination size is unavailable."
+            )
+        }
+        guard expectedBytes == destinationSize else {
+            throw RemoteProviderError.invalidResponse(
+                "Transfer verification failed: expected \(expectedBytes) bytes but destination reports \(destinationSize) bytes."
+            )
+        }
     }
 
     private func streamPartialPath(for destinationPath: String, recordID: UUID) -> String {
@@ -1132,8 +1181,57 @@ final class TransferEngine: ObservableObject {
                 throw error
             }
         } else {
-            try await destination.upload(from: localURL, to: destinationPath, overwrite: overwrite)
-            finalizedTransfers.insert(id)
+            // Providers without chunked writes can still expose an atomic move.
+            // Keep the native upload out of the user-visible destination until
+            // it has returned successfully. This prevents a cancellation or a
+            // provider failure from leaving a partial file at the final path.
+            let usePartial = destination.capabilities.contains(.move)
+            let targetPath = usePartial
+                ? streamPartialPath(for: destinationPath, recordID: id)
+                : destinationPath
+            do {
+                try await destination.upload(
+                    from: localURL,
+                    to: targetPath,
+                    overwrite: usePartial ? true : overwrite
+                )
+                if usePartial {
+                    // The native upload has returned, but ownership can still
+                    // have been invalidated while the provider was finishing.
+                    // Do this check before taking the commit lock so cancellation
+                    // cleans only our private partial path.
+                    try checkExecution(token, for: id)
+                    try enterFinalizationLock(for: id, token: token, allowLatePause: true)
+
+                    let destinationExisted = try await destinationItemIfPresent(
+                        path: destinationPath,
+                        on: destination
+                    ) != nil
+                    if destinationExisted && !overwrite {
+                        throw RemoteProviderError.conflict("An item already exists at \(destinationPath).")
+                    }
+                    update(id, token: token) {
+                        $0.commitDestinationExisted = destinationExisted
+                    }
+                    try await destination.move(
+                        from: targetPath,
+                        to: destinationPath,
+                        overwrite: overwrite
+                    )
+                }
+                // Keep the late-cancellation behavior used by the direct native
+                // path: once the final move/upload has returned, this task owns a
+                // completed payload and the terminal state may win the race.
+                finalizedTransfers.insert(id)
+            } catch {
+                // A staged native upload owns only targetPath. Never remove the
+                // final destination here: it may predate this transfer or the
+                // move may already have committed before a later error surfaced.
+                if usePartial {
+                    try? await destination.remove(path: targetPath, isDirectory: false)
+                }
+                throw error
+            }
             update(id, token: token) {
                 $0.transferredBytes = totalBytes
                 let elapsed = Date().timeIntervalSince(startedAt)

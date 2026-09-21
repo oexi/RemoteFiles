@@ -57,7 +57,7 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
     func attributes(path: String) async throws -> RemoteItem {
         let parent = RemotePath.parent(path)
         guard let item = try await list(path: parent).first(where: { $0.path == RemotePath.normalize(path) }) else {
-            throw RemoteProviderError.invalidResponse("WebDAV item was not found in its parent collection.")
+            throw RemoteProviderError.notFound("The remote item was not found at \(path).")
         }
         return item
     }
@@ -196,6 +196,7 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
         guard let http = response as? HTTPURLResponse else { throw RemoteProviderError.invalidResponse("Non-HTTP response.") }
         guard allowed.contains(http.statusCode) else {
             if http.statusCode == 401 || http.statusCode == 403 { throw RemoteProviderError.authenticationRequired }
+            if http.statusCode == 404 { throw RemoteProviderError.notFound("The remote item was not found.") }
             if http.statusCode == 409 || http.statusCode == 412 { throw RemoteProviderError.conflict("WebDAV conflict (HTTP \(http.statusCode)).") }
             throw RemoteProviderError.invalidResponse("WebDAV HTTP \(http.statusCode).")
         }

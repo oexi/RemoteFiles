@@ -120,3 +120,8 @@
 "SMB" = "SMB";
 "WebDAV" = "WebDAV";
 "SSH Host Key" = "SSH Host Key";
+"Cache" = "Cache";
+"Cache Usage" = "Cache Usage";
+"Clear Cache" = "Clear Cache";
+"Cached previews and materialized files. Offline files and active transfers are not affected." = "Cached previews and materialized files. Offline files and active transfers are not affected.";
+"Calculating…" = "Calculating…";

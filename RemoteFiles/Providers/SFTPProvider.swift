@@ -119,10 +119,19 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         let sftp = try await client()
         let normalized = RemotePath.normalize(path)
         let expectedSize: UInt64?
-        if let remoteAttributes = try? await sftp.getAttributes(at: normalized) {
+        do {
+            let remoteAttributes = try await sftp.getAttributes(at: normalized)
             expectedSize = remoteAttributes.size
-        } else {
-            expectedSize = nil
+        } catch {
+            let normalizedError = Self.normalizedSFTPError(
+                error,
+                operation: "read attributes for \(normalized)"
+            )
+            if RemoteProviderError.isNotFound(normalizedError) {
+                expectedSize = nil
+            } else {
+                throw normalizedError
+            }
         }
         try? FileManager.default.removeItem(at: localURL)
         FileManager.default.createFile(atPath: localURL.path, contents: nil)
@@ -189,10 +198,9 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             do {
                 try await file.close()
             } catch {
-                if let localSize,
-                   let remote = try? await attributes(path: normalized),
-                   remote.size == localSize {
-                    return
+                if let localSize {
+                    let remote = try await attributes(path: normalized)
+                    if remote.size == localSize { return }
                 }
                 throw error
             }
@@ -246,9 +254,15 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         let normalized = RemotePath.normalize(path)
         let sftp = try await client()
 
-        if resumeOffset > 0, let existing = try? await attributes(path: normalized),
-           UInt64(max(0, existing.size ?? 0)) == resumeOffset {
-            return resumeOffset
+        if resumeOffset > 0 {
+            do {
+                let existing = try await attributes(path: normalized)
+                if UInt64(max(0, existing.size ?? 0)) == resumeOffset {
+                    return resumeOffset
+                }
+            } catch {
+                guard RemoteProviderError.isNotFound(error) else { throw error }
+            }
         }
 
         let flags: SFTPOpenFileFlags = overwrite ? [.write, .create, .truncate] : [.write, .create, .forceCreate]
@@ -266,11 +280,21 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
 
         let safeResumeOffset: UInt64
         let flags: SFTPOpenFileFlags
-        if resumeOffset > 0,
-           let existing = try? await attributes(path: normalized),
-           UInt64(max(0, existing.size ?? 0)) == resumeOffset {
-            safeResumeOffset = resumeOffset
-            flags = [.write]
+        if resumeOffset > 0 {
+            do {
+                let existing = try await attributes(path: normalized)
+                if UInt64(max(0, existing.size ?? 0)) == resumeOffset {
+                    safeResumeOffset = resumeOffset
+                    flags = [.write]
+                } else {
+                    safeResumeOffset = 0
+                    flags = overwrite ? [.write, .create, .truncate] : [.write, .create, .forceCreate]
+                }
+            } catch {
+                guard RemoteProviderError.isNotFound(error) else { throw error }
+                safeResumeOffset = 0
+                flags = overwrite ? [.write, .create, .truncate] : [.write, .create, .forceCreate]
+            }
         } else {
             safeResumeOffset = 0
             flags = overwrite ? [.write, .create, .truncate] : [.write, .create, .forceCreate]
@@ -341,8 +365,13 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
     }
 
     func move(from: String, to: String, overwrite: Bool) async throws {
-        if !overwrite, (try? await attributes(path: to)) != nil {
-            throw RemoteProviderError.conflict("An item already exists at \(to).")
+        if !overwrite {
+            do {
+                _ = try await attributes(path: to)
+                throw RemoteProviderError.conflict("An item already exists at \(to).")
+            } catch {
+                guard RemoteProviderError.isNotFound(error) else { throw error }
+            }
         }
         let source = RemotePath.normalize(from)
         let destination = RemotePath.normalize(to)
@@ -710,7 +739,7 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         case .eof:
             return RemoteProviderError.invalidResponse("The SFTP server reported an unexpected end of file while trying to \(operation).\(suffix)")
         case .noSuchFile:
-            return RemoteProviderError.invalidResponse("The remote file no longer exists while trying to \(operation).\(suffix)")
+            return RemoteProviderError.notFound("The remote item was not found while trying to \(operation).\(suffix)")
         case .permissionDenied:
             return RemoteProviderError.invalidResponse("The SFTP server denied permission to \(operation).\(suffix)")
         case .unsupportedOperation:

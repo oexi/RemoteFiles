@@ -61,7 +61,12 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
 
     func attributes(path: String) async throws -> RemoteItem {
         try await ensureConnected()
-        let stat = try await client.fileStat(path: smbPath(path))
+        let stat: FileStat
+        do {
+            stat = try await client.fileStat(path: smbPath(path))
+        } catch {
+            throw Self.normalizedAttributeError(error, path: path)
+        }
         let name = (path as NSString).lastPathComponent
         return RemoteItem(
             name: name,
@@ -116,7 +121,15 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         let remotePath = smbPath(path)
         if let old = chunkFileIDs.removeValue(forKey: remotePath) { _ = try? await client.session.close(fileId: old) }
 
-        let existingSize: UInt64? = if let stat = try? await client.fileStat(path: remotePath), !stat.isDirectory { stat.size } else { nil }
+        let existingSize: UInt64?
+        do {
+            let stat = try await client.fileStat(path: remotePath)
+            existingSize = stat.isDirectory ? nil : stat.size
+        } catch {
+            let normalizedError = Self.normalizedAttributeError(error, path: path)
+            guard RemoteProviderError.isNotFound(normalizedError) else { throw error }
+            existingSize = nil
+        }
         let canResume = resumeOffset > 0 && existingSize == resumeOffset
         if !overwrite && !canResume && existingSize != nil {
             throw RemoteProviderError.conflict("A file already exists at \(path).")
@@ -208,6 +221,17 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     private func smbPath(_ path: String) -> String {
         let normalized = RemotePath.normalize(path)
         return normalized == "/" ? "" : String(normalized.dropFirst())
+    }
+
+    private static func normalizedAttributeError(_ error: Error, path: String) -> Error {
+        guard let response = error as? ErrorResponse else { return error }
+        let status = NTStatus(response.header.status)
+        guard status == .objectNameNotFound ||
+                status == .objectPathNotFound ||
+                status == .noSuchFile else {
+            return error
+        }
+        return RemoteProviderError.notFound("The remote item was not found at \(path).")
     }
 }
 

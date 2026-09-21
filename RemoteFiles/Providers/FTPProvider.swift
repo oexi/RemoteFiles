@@ -82,12 +82,48 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func attributes(path: String) async throws -> RemoteItem {
-        let object: FileObject = try await withCheckedThrowingContinuation { continuation in
-            provider.attributesOfItem(path: ftpPath(path)) { object, error in
-                if let error { continuation.resume(throwing: error) }
-                else if let object { continuation.resume(returning: object) }
-                else { continuation.resume(throwing: RemoteProviderError.invalidResponse("FTP returned no attributes.")) }
+        let normalized = RemotePath.normalize(path)
+        guard normalized != "/" else {
+            return try await rootAttributes(path: normalized)
+        }
+
+        // FilesProvider's MLST/LIST response uses a generic bad-server-response
+        // error for a missing item. Listing the parent gives us an affirmative
+        // existence check without guessing whether that error means "missing"
+        // or a permission/transport failure. Any parent-list error propagates.
+        let parentItems = try await list(path: RemotePath.parent(normalized))
+        guard let item = Self.findItem(at: normalized, in: parentItems) else {
+            throw RemoteProviderError.notFound("The remote item was not found at \(normalized).")
+        }
+        let permissions = chmodSupported
+            ? (try? await unixPermissions(path: normalized))
+            : item.permissions
+        return RemoteItem(
+            name: item.name,
+            path: item.path,
+            kind: item.kind,
+            size: item.size,
+            modifiedAt: item.modifiedAt,
+            createdAt: item.createdAt,
+            isHidden: item.isHidden,
+            contentType: item.contentType,
+            permissions: permissions ?? item.permissions,
+            revision: item.revision
+        )
+    }
+
+    private func rootAttributes(path: String) async throws -> RemoteItem {
+        let object: FileObject
+        do {
+            object = try await withCheckedThrowingContinuation { continuation in
+                provider.attributesOfItem(path: ftpPath(path)) { object, error in
+                    if let error { continuation.resume(throwing: error) }
+                    else if let object { continuation.resume(returning: object) }
+                    else { continuation.resume(throwing: RemoteProviderError.invalidResponse("FTP returned no attributes.")) }
+                }
             }
+        } catch {
+            throw Self.normalizedAttributeError(error, path: path)
         }
         let name = object.name.isEmpty ? (path as NSString).lastPathComponent : object.name
         let permissions = chmodSupported ? (try? await unixPermissions(path: path)) : nil
@@ -102,6 +138,11 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
             permissions: permissions,
             revision: .init(modifiedAt: object.modifiedDate, size: object.size >= 0 ? object.size : nil)
         )
+    }
+
+    static func findItem(at path: String, in items: [RemoteItem]) -> RemoteItem? {
+        let normalized = RemotePath.normalize(path)
+        return items.first { RemotePath.normalize($0.path) == normalized }
     }
 
     func setPermissions(path: String, permissions: UInt32) async throws {
@@ -119,23 +160,39 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func download(path: String, to localURL: URL) async throws {
+        try Task.checkCancellation()
         try? FileManager.default.removeItem(at: localURL)
-        try await bridge { completion in
-            _ = provider.copyItem(path: ftpPath(path), toLocalURL: localURL, completionHandler: completion)
+        try await withProviderCancellation { complete, _ in
+            provider.copyItem(path: ftpPath(path), toLocalURL: localURL) { error in
+                if let error {
+                    complete(.failure(error))
+                } else {
+                    complete(.success(()))
+                }
+            }
         }
     }
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
-        try await bridge { completion in
-            _ = provider.copyItem(localFile: localURL, to: ftpPath(path), overwrite: overwrite, completionHandler: completion)
+        try await withProviderCancellation { complete, _ in
+            provider.copyItem(localFile: localURL, to: ftpPath(path), overwrite: overwrite) { error in
+                if let error {
+                    complete(.failure(error))
+                } else {
+                    complete(.success(()))
+                }
+            }
         }
     }
 
     func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            _ = provider.contents(path: ftpPath(path), offset: Int64(clamping: offset), length: length) { data, error in
-                if let error { continuation.resume(throwing: error) }
-                else { continuation.resume(returning: data ?? Data()) }
+        try await withProviderCancellation { complete, _ in
+            provider.contents(path: ftpPath(path), offset: Int64(clamping: offset), length: length) { data, error in
+                if let error {
+                    complete(.failure(error))
+                } else {
+                    complete(.success(data ?? Data()))
+                }
             }
         }
     }
@@ -181,6 +238,16 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     private func ftpPath(_ path: String) -> String {
         let normalized = RemotePath.normalize(path)
         return normalized == "/" ? "/" : normalized
+    }
+
+    private static func normalizedAttributeError(_ error: Error, path: String) -> Error {
+        if let urlError = error as? URLError, urlError.code == .fileDoesNotExist {
+            return RemoteProviderError.notFound("The remote item was not found at \(path).")
+        }
+        if let cocoaError = error as? CocoaError, cocoaError.code == .fileNoSuchFile {
+            return RemoteProviderError.notFound("The remote item was not found at \(path).")
+        }
+        return error
     }
 
     private func detectCHMODSupport() async -> Bool {
