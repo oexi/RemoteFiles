@@ -111,7 +111,7 @@ final class ProviderCancellationState<Value>: @unchecked Sendable {
         if let urlError = error as? URLError, urlError.code == .cancelled {
             return CancellationError()
         }
-        if let cocoaError = error as? CocoaError, cocoaError.code == .fileReadCancelled {
+        if let cocoaError = error as? CocoaError, cocoaError.code == .userCancelled {
             return CancellationError()
         }
         if let posixError = error as? POSIXError, posixError.code == .ECANCELED {

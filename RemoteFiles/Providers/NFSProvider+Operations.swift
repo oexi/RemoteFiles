@@ -43,7 +43,7 @@ extension NFSProvider {
 
     func download(path: String, to localURL: URL) async throws {
         try await ensureConnected()
-        try await withProviderCancellation { complete, isCancelled -> Progress? in
+        let _: Void = try await withProviderCancellation { complete, isCancelled -> Progress? in
             client.downloadItem(atPath: nfsPath(path), to: localURL, progress: { _, _ in
                 !isCancelled()
             }) { error in
@@ -67,7 +67,7 @@ extension NFSProvider {
                 guard RemoteProviderError.isNotFound(error) else { throw error }
             }
         }
-        try await withProviderCancellation { complete, isCancelled -> Progress? in
+        let _: Void = try await withProviderCancellation { complete, isCancelled -> Progress? in
             client.uploadItem(at: localURL, toPath: nfsPath(path), progress: { _ in
                 !isCancelled()
             }) { error in
