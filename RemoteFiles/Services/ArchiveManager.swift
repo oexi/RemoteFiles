@@ -137,11 +137,11 @@ enum ArchiveManager {
         )
         let parent = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        var destinationIsDirectory = false
+        var destinationIsDirectory = ObjCBool(false)
         guard !FileManager.default.fileExists(
             atPath: destination.path,
             isDirectory: &destinationIsDirectory
-        ) || !destinationIsDirectory else {
+        ) || !destinationIsDirectory.boolValue else {
             throw RemoteProviderError.conflict("The archive destination is a directory.")
         }
         try preflight(entries: [info], destination: parent)
@@ -485,7 +485,9 @@ enum ArchiveManager {
             },
             didFinishEntry: { entry, _ in
                 guard entry.fileType == .regular else { return }
-                guard let handle = outputHandle, let stagingURL, let outputTarget else {
+                guard let handle = outputHandle,
+                      let staging = stagingURL,
+                      let target = outputTarget else {
                     throw RemoteProviderError.invalidResponse("Archive entry output was not opened.")
                 }
                 guard entry.size >= 0,
@@ -496,10 +498,10 @@ enum ArchiveManager {
                 try handle.truncate(atOffset: UInt64(entry.size))
                 try handle.close()
                 outputHandle = nil
-                if FileManager.default.fileExists(atPath: outputTarget.path) {
-                    _ = try FileManager.default.replaceItemAt(outputTarget, withItemAt: stagingURL)
+                if FileManager.default.fileExists(atPath: target.path) {
+                    _ = try FileManager.default.replaceItemAt(target, withItemAt: staging)
                 } else {
-                    try FileManager.default.moveItem(at: stagingURL, to: outputTarget)
+                    try FileManager.default.moveItem(at: staging, to: target)
                 }
                 stagingURL = nil
                 outputTarget = nil

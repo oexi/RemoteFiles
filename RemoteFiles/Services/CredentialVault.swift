@@ -142,7 +142,7 @@ final class CredentialVault: @unchecked Sendable {
             kSecAttrService as String: service,
             kSecAttrAccount as String: profileID.uuidString
         ]
-        keychain.delete(query)
+        _ = keychain.delete(query)
     }
 
     private struct Payload: Codable {

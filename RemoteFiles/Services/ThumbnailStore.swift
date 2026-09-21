@@ -6,7 +6,7 @@ import UIKit
 @MainActor
 final class ThumbnailStore {
     static let shared = ThumbnailStore()
-    static let defaultMaximumBytes: Int64 = 128 * 1024 * 1024
+    nonisolated static let defaultMaximumBytes: Int64 = 128 * 1024 * 1024
 
     private let memory = NSCache<NSString, UIImage>()
     private let root: URL

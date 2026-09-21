@@ -162,7 +162,7 @@ final class ArchiveManagerTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: archive.path, contents: nil)
         let handle = try FileHandle(forWritingTo: archive)
-        try handle.seek(toFileOffset: ArchiveManager.maxLegacyCompressedBytes + 1)
+        handle.seek(toFileOffset: ArchiveManager.maxLegacyCompressedBytes + 1)
         try handle.write(contentsOf: Data([0]))
         try handle.close()
 

@@ -33,7 +33,7 @@ struct OfflineDetailView: View {
         .toolbar {
             if !item.directory {
                 ToolbarItem(placement: .secondaryAction) {
-                    if let externalURL {
+                    if externalURL != nil {
                         Button {
                             showingShare = true
                         } label: {

@@ -1467,7 +1467,7 @@ final class TransferEngine: ObservableObject {
                 return
             }
             guard !Task.isCancelled else { return }
-            await self?.persistNow()
+            self?.persistNow()
         }
     }
 

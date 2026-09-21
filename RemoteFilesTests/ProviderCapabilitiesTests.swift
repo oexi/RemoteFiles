@@ -14,11 +14,12 @@ final class ProviderCapabilitiesTests: XCTestCase {
         var profile = ConnectionProfile.empty(for: .nfs)
         profile.host = "nfs.example"
         let provider = try NFSProvider(profile: profile)
+        let erasedProvider: any RemoteFileProvider = provider
 
         XCTAssertTrue(provider.capabilities.contains(.randomRead))
         XCTAssertFalse(provider.capabilities.contains(.randomWrite))
         XCTAssertFalse(provider.capabilities.contains(.resume))
-        XCTAssertTrue(provider is any RemoteChunkReadableProvider)
-        XCTAssertFalse(provider is any RemoteChunkWritableProvider)
+        XCTAssertTrue(erasedProvider is any RemoteChunkReadableProvider)
+        XCTAssertFalse(erasedProvider is any RemoteChunkWritableProvider)
     }
 }
