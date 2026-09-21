@@ -162,7 +162,7 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     func download(path: String, to localURL: URL) async throws {
         try Task.checkCancellation()
         try? FileManager.default.removeItem(at: localURL)
-        try await withProviderCancellation { complete, _ in
+        let _: Void = try await withProviderCancellation { complete, _ in
             self.provider.copyItem(path: self.ftpPath(path), toLocalURL: localURL) { error in
                 if let error {
                     complete(.failure(error))
@@ -174,7 +174,7 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
-        try await withProviderCancellation { complete, _ in
+        let _: Void = try await withProviderCancellation { complete, _ in
             self.provider.copyItem(localFile: localURL, to: self.ftpPath(path), overwrite: overwrite) { error in
                 if let error {
                     complete(.failure(error))
