@@ -163,7 +163,7 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         try Task.checkCancellation()
         try? FileManager.default.removeItem(at: localURL)
         try await withProviderCancellation { complete, _ in
-            provider.copyItem(path: ftpPath(path), toLocalURL: localURL) { error in
+            self.provider.copyItem(path: self.ftpPath(path), toLocalURL: localURL) { error in
                 if let error {
                     complete(.failure(error))
                 } else {
@@ -175,7 +175,7 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
         try await withProviderCancellation { complete, _ in
-            provider.copyItem(localFile: localURL, to: ftpPath(path), overwrite: overwrite) { error in
+            self.provider.copyItem(localFile: localURL, to: self.ftpPath(path), overwrite: overwrite) { error in
                 if let error {
                     complete(.failure(error))
                 } else {
@@ -187,7 +187,7 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
 
     func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
         try await withProviderCancellation { complete, _ in
-            provider.contents(path: ftpPath(path), offset: Int64(clamping: offset), length: length) { data, error in
+            self.provider.contents(path: self.ftpPath(path), offset: Int64(clamping: offset), length: length) { data, error in
                 if let error {
                     complete(.failure(error))
                 } else {

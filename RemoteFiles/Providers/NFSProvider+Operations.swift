@@ -44,7 +44,7 @@ extension NFSProvider {
     func download(path: String, to localURL: URL) async throws {
         try await ensureConnected()
         let _: Void = try await withProviderCancellation { complete, isCancelled -> Progress? in
-            client.downloadItem(atPath: nfsPath(path), to: localURL, progress: { _, _ in
+            self.client.downloadItem(atPath: self.nfsPath(path), to: localURL, progress: { _, _ in
                 !isCancelled()
             }) { error in
                 if let error {
@@ -68,7 +68,7 @@ extension NFSProvider {
             }
         }
         let _: Void = try await withProviderCancellation { complete, isCancelled -> Progress? in
-            client.uploadItem(at: localURL, toPath: nfsPath(path), progress: { _ in
+            self.client.uploadItem(at: localURL, toPath: self.nfsPath(path), progress: { _ in
                 !isCancelled()
             }) { error in
                 if let error {
