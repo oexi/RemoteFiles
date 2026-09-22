@@ -36,6 +36,7 @@ enum FileProviderDomainManager {
             identifier: NSFileProviderDomainIdentifier(rawValue: profile.id.uuidString),
             displayName: profile.name
         )
+        let logger = Self.logger
         NSFileProviderManager(for: domain)?.signalEnumerator(for: identifier) { error in
             if let error {
                 logger.debug("File Provider signal failed: \(error.localizedDescription, privacy: .public)")
