@@ -208,12 +208,13 @@ final class OfflineStore: ObservableObject {
     func copyToServer(
         _ item: OfflineItem,
         destination profile: ConnectionProfile,
+        folder: String? = nil,
         transfers: TransferEngine
     ) async throws {
         let provider = try ProviderFactory.make(for: profile)
         try await provider.connect()
         do {
-            let parent = RemotePath.normalize(profile.initialPath)
+            let parent = RemotePath.normalize(folder ?? profile.initialPath)
             let descriptor = RemoteItem(
                 name: item.fileName,
                 path: item.remotePath,

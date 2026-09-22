@@ -70,8 +70,8 @@ struct OfflineDetailView: View {
             }
         }
         .sheet(isPresented: $showingDestinations) {
-            CopyDestinationView(profiles: connections.profiles, fileName: item.fileName) { profile in
-                Task { await copy(to: profile) }
+            CopyDestinationView(profiles: connections.profiles, fileName: item.fileName) { profile, folder in
+                Task { await copy(to: profile, folder: folder) }
             }
         }
         .alert("Offline File", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
@@ -89,11 +89,11 @@ struct OfflineDetailView: View {
         }
     }
 
-    private func copy(to profile: ConnectionProfile) async {
+    private func copy(to profile: ConnectionProfile, folder: String) async {
         working = true
         defer { working = false }
         do {
-            try await offline.copyToServer(item, destination: profile, transfers: transfers)
+            try await offline.copyToServer(item, destination: profile, folder: folder, transfers: transfers)
             message = "Copied to \(profile.name)."
         } catch {
             message = error.localizedDescription
