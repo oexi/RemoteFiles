@@ -609,9 +609,22 @@ final class TransferEngine: ObservableObject {
         path: String,
         on destination: any RemoteFileProvider
     ) async throws -> RemoteItem? {
-        let normalized = RemotePath.normalize(path)
-        let entries = try await destination.list(path: RemotePath.parent(normalized))
-        return entries.first(where: { RemotePath.normalize($0.path) == normalized })
+        do {
+            return try await destination.attributes(path: path)
+        } catch {
+            if RemoteProviderError.isNotFound(error) {
+                return nil
+            }
+            guard let providerError = error as? RemoteProviderError,
+                  case .unsupported = providerError else {
+                throw error
+            }
+            // Compatibility fallback for providers that can list a parent but
+            // do not expose a dedicated attributes operation.
+            let normalized = RemotePath.normalize(path)
+            let entries = try await destination.list(path: RemotePath.parent(normalized))
+            return entries.first(where: { RemotePath.normalize($0.path) == normalized })
+        }
     }
 
     private func streamCopy(
@@ -965,6 +978,10 @@ final class TransferEngine: ObservableObject {
     ) {
         if let token, executionOwnership[id]?.owns(token) != true { return }
         flushProgress(for: id, token: token)
+        // `persistNow()` flushes every remaining snapshot. Remove this one after
+        // applying it so a stale throttled value cannot overwrite the mutation
+        // below (for example progress = 1 on terminal completion).
+        progressSnapshots[id] = nil
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         mutation(&records[index])
         persistNow()

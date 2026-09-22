@@ -1069,6 +1069,7 @@ private final class ResumeCheckpointDestinationProvider: RemoteFileProvider, Rem
     private let lock = NSLock()
     private var preparedResumeOffsetsStorage: [UInt64] = []
     private var preparedOverwriteFlagsStorage: [Bool] = []
+    private var movedStorage = false
 
     init(profile: ConnectionProfile, totalBytes: Int, unconfirmedPartialBytes: Int) {
         self.profile = profile
@@ -1094,8 +1095,18 @@ private final class ResumeCheckpointDestinationProvider: RemoteFileProvider, Rem
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws { }
 
     func attributes(path: String) async throws -> RemoteItem {
-        let size = path.hasSuffix(".partial") ? unconfirmedPartialBytes : totalBytes
-        return RemoteItem(name: "resume.bin", path: path, kind: .file, size: Int64(size))
+        if path.hasSuffix(".partial") {
+            return RemoteItem(
+                name: ".partial",
+                path: path,
+                kind: .file,
+                size: Int64(unconfirmedPartialBytes)
+            )
+        }
+        guard withTestLock(lock, { movedStorage }) else {
+            throw RemoteProviderError.notFound("The final destination does not exist yet.")
+        }
+        return RemoteItem(name: "resume.bin", path: path, kind: .file, size: Int64(totalBytes))
     }
 
     func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64 {
@@ -1112,7 +1123,9 @@ private final class ResumeCheckpointDestinationProvider: RemoteFileProvider, Rem
 
     func writeChunk(path: String, data: Data, offset: UInt64) async throws { }
     func finishChunkedUpload(path: String) async throws { }
-    func move(from: String, to: String, overwrite: Bool) async throws { }
+    func move(from: String, to: String, overwrite: Bool) async throws {
+        withTestLock(lock) { movedStorage = true }
+    }
 }
 
 private enum FinalVerificationStat: Sendable {
@@ -1168,7 +1181,7 @@ private final class FinalVerificationDestinationProvider: RemoteFileProvider, Re
 
         let moved = withTestLock(lock) { movedStorage }
         guard path == destinationPath, moved else {
-            throw RemoteProviderError.invalidResponse("The destination item was not found.")
+            throw RemoteProviderError.notFound("The destination item was not found.")
         }
         switch finalStat {
         case .error(let message):
@@ -1242,7 +1255,7 @@ private final class BlockingMoveDestinationProvider: RemoteFileProvider, RemoteC
         if path.hasSuffix(".partial") {
             return RemoteItem(name: ".partial", path: path, kind: .file, size: Int64(size))
         }
-        throw RemoteProviderError.invalidResponse("The destination item was not found.")
+        throw RemoteProviderError.notFound("The destination item was not found.")
     }
 
     func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64 {
@@ -1498,6 +1511,7 @@ private final class PausableChunkDestinationProvider: RemoteFileProvider, Remote
     private let lock = NSLock()
     private var writtenBytesStorage = 0
     private var didDisconnectStorage = false
+    private var movedStorage = false
 
     init(profile: ConnectionProfile) {
         self.profile = profile
@@ -1508,11 +1522,28 @@ private final class PausableChunkDestinationProvider: RemoteFileProvider, Remote
     func list(path: String) async throws -> [RemoteItem] { [] }
     func download(path: String, to localURL: URL) async throws { }
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws { }
+    func attributes(path: String) async throws -> RemoteItem {
+        let state = withTestLock(lock) { (writtenBytesStorage, movedStorage) }
+        if path.hasSuffix(".partial"), state.0 > 0 {
+            return RemoteItem(name: ".partial", path: path, kind: .file, size: Int64(state.0))
+        }
+        if !path.hasSuffix(".partial"), state.1 {
+            return RemoteItem(
+                name: (path as NSString).lastPathComponent,
+                path: path,
+                kind: .file,
+                size: Int64(state.0)
+            )
+        }
+        throw RemoteProviderError.notFound("The destination item does not exist yet.")
+    }
     func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64 { resumeOffset }
     func writeChunk(path: String, data: Data, offset: UInt64) async throws {
         recordWrite(data.count)
     }
-    func move(from: String, to: String, overwrite: Bool) async throws { }
+    func move(from: String, to: String, overwrite: Bool) async throws {
+        withTestLock(lock) { movedStorage = true }
+    }
 
     var writtenBytes: Int {
         lock.lock()
