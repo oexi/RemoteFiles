@@ -32,6 +32,11 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         self.credential = credential
     }
 
+    deinit {
+        connectTask?.cancel()
+        activeClient?.session.disconnect()
+    }
+
     func connect() async throws {
         _ = try await ensureConnected()
     }

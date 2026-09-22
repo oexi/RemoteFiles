@@ -47,7 +47,7 @@ struct ConnectionEditorView: View {
 
                         if privateKey == nil {
                             SecureField("Password", text: $password)
-                            Button("Import OpenSSH Private Key", systemImage: "key") {
+                            Button("Import SSH Private Key", systemImage: "key") {
                                 showingPrivateKeyImporter = true
                             }
                         } else {
@@ -97,6 +97,22 @@ struct ConnectionEditorView: View {
 
                 if profile.protocolType == .webdav {
                     Section("WebDAV") { Toggle("Use HTTPS", isOn: $profile.useTLS) }
+                }
+
+                if usesTLS {
+                    Section {
+                        Toggle("Verify TLS Certificate", isOn: $profile.verifyTLS)
+                        if !profile.verifyTLS && profile.protocolType == .webdav {
+                            Button("Forget Trusted Certificate", role: .destructive) {
+                                forgetTrustedCertificate()
+                            }
+                            .disabled(profile.host.isEmpty)
+                        }
+                    } header: {
+                        Text("TLS Certificate")
+                    } footer: {
+                        Text(tlsFooter)
+                    }
                 }
 
                 if profile.protocolType != .webdav {
@@ -169,6 +185,40 @@ struct ConnectionEditorView: View {
         }
     }
 
+    private var usesTLS: Bool {
+        switch profile.protocolType {
+        case .ftps:
+            return true
+        case .webdav:
+            let host = profile.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if host.hasPrefix("https://") { return true }
+            if host.hasPrefix("http://") { return false }
+            return profile.useTLS
+        default:
+            return false
+        }
+    }
+
+    private var tlsFooter: LocalizedStringKey {
+        if profile.verifyTLS {
+            return "Only certificates trusted by iOS are accepted."
+        }
+        if profile.protocolType == .ftps {
+            return "Any certificate is accepted, including self-signed ones. Use this only on a network you trust."
+        }
+        return "Self-signed certificates are accepted. The first certificate is remembered, and a different certificate later blocks the connection."
+    }
+
+    private func forgetTrustedCertificate() {
+        do {
+            let endpoint = try WebDAVProvider(profile: profile, credential: nil).trustEndpoint()
+            TLSCertificatePinStore().remove(host: endpoint.host, port: endpoint.port)
+            testMessage = String(localized: "Trusted certificate forgotten. Verify the server before reconnecting.")
+        } catch {
+            testMessage = error.localizedDescription
+        }
+    }
+
     private func importPrivateKey(from url: URL) {
         do {
             let data = try Data(contentsOf: url)
@@ -178,7 +228,7 @@ struct ConnectionEditorView: View {
             guard let keyString = String(data: data, encoding: .utf8) else {
                 throw RemoteProviderError.invalidConfiguration("The private key must be UTF-8 text.")
             }
-            _ = try SSHKeyDetection.detectPrivateKeyType(from: keyString)
+            _ = try SSHPrivateKeyLoader.detectKind(keyString)
             privateKey = data
             privateKeyName = url.lastPathComponent
             testMessage = "Private key imported. Test the connection before saving."

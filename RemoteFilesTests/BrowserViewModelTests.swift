@@ -151,3 +151,65 @@ private final class GatedListProvider: RemoteFileProvider, @unchecked Sendable {
     func download(path: String, to localURL: URL) async throws { }
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws { }
 }
+
+@MainActor
+final class BrowserUploadConflictTests: XCTestCase {
+    func testKeepBothUploadsBesideExistingFile() async throws {
+        let storage = MemoryRemoteProvider.Storage()
+        storage.write("/report.txt", Data("old".utf8))
+        var profile = ConnectionProfile.empty(for: .sftp)
+        profile.initialPath = "/"
+        let provider = MemoryRemoteProvider(profile: profile, storage: storage)
+        let model = BrowserViewModel(profile: profile, makeProvider: { _ in provider })
+        await model.start()
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("UploadConflict-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let local = directory.appendingPathComponent("report.txt")
+        try Data("new".utf8).write(to: local)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+
+        let upload = Task { await model.upload(localURLs: [local], transfers: engine) }
+        for _ in 0..<500 where model.pendingUploadConflict == nil {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(model.pendingUploadConflict?.name, "report.txt")
+        model.resolveUploadConflict(.keepBoth, applyToAll: false)
+        await upload.value
+
+        XCTAssertEqual(storage.data("/report.txt"), Data("old".utf8))
+        XCTAssertEqual(storage.data("/report copy.txt"), Data("new".utf8))
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testSkipLeavesExistingFileUntouched() async throws {
+        let storage = MemoryRemoteProvider.Storage()
+        storage.write("/report.txt", Data("old".utf8))
+        var profile = ConnectionProfile.empty(for: .sftp)
+        profile.initialPath = "/"
+        let provider = MemoryRemoteProvider(profile: profile, storage: storage)
+        let model = BrowserViewModel(profile: profile, makeProvider: { _ in provider })
+        await model.start()
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("UploadConflict-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let local = directory.appendingPathComponent("report.txt")
+        try Data("new".utf8).write(to: local)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+
+        let upload = Task { await model.upload(localURLs: [local], transfers: engine) }
+        for _ in 0..<500 where model.pendingUploadConflict == nil {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        model.resolveUploadConflict(.skip, applyToAll: false)
+        await upload.value
+
+        XCTAssertEqual(storage.allFiles, ["/report.txt"])
+        XCTAssertEqual(storage.data("/report.txt"), Data("old".utf8))
+        XCTAssertTrue(engine.records.isEmpty)
+    }
+}

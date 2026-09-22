@@ -62,3 +62,40 @@ final class TextEncodingRoundTripTests: XCTestCase {
         XCTAssertEqual(decoded.encoding, .utf8(byteOrderMark: false))
     }
 }
+
+final class LegacyChineseEncodingTests: XCTestCase {
+    // "编辑中文配置文件：服务器 = 本地\n" encoded as GBK/GB18030.
+    private let gbkBytes = Data(hex: "b1e0bcadd6d0cec4c5e4d6c3cec4bcfea3bab7fecef1c6f7203d20b1beb5d80a")
+
+    func testGBKTextOpensAndSavesInGB18030() throws {
+        let decoded = try XCTUnwrap(TextFileDetector.decodeText(gbkBytes))
+
+        XCTAssertEqual(decoded.text, "编辑中文配置文件：服务器 = 本地\n")
+        XCTAssertEqual(decoded.encoding, .gb18030)
+        XCTAssertEqual(decoded.encoding.encode(decoded.text), gbkBytes)
+    }
+
+    func testUtf8ChineseStaysUtf8() throws {
+        let data = Data("编辑中文\n".utf8)
+        XCTAssertEqual(TextFileDetector.decodeText(data)?.encoding, .utf8(byteOrderMark: false))
+    }
+
+    func testBinaryWithHighBytesIsStillRejected() {
+        var bytes: [UInt8] = []
+        for index in 0..<512 { bytes.append(UInt8(truncatingIfNeeded: index * 37)) }
+        XCTAssertNil(TextFileDetector.decodeText(Data(bytes)))
+    }
+}
+
+private extension Data {
+    init(hex: String) {
+        var bytes: [UInt8] = []
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            bytes.append(UInt8(hex[index..<next], radix: 16)!)
+            index = next
+        }
+        self.init(bytes)
+    }
+}

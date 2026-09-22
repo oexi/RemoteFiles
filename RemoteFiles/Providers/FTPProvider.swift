@@ -43,6 +43,11 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         // upload mode. REST mode reconnects for every optimized chunk, which
         // is especially costly on high-latency FTP/FTPS servers.
         provider.uploadByREST = false
+        if profile.protocolType == .ftps && !profile.verifyTLS {
+            // FilesProvider cannot pin a certificate for FTPS; with
+            // verification turned off by the user it accepts any certificate.
+            provider.serverTrustPolicy = .disableEvaluation
+        }
         self.provider = provider
     }
 

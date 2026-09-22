@@ -5,49 +5,63 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
     let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .copy, .fileRevisions])
 
     private let credential: Credential?
-    private let session: URLSession
+    private let injectedSession: URLSession?
+    // `disconnect()` invalidates the owned session. A provider can still be
+    // used afterwards (for example by a view that outlives a transfer), so a
+    // fresh session is created lazily instead of reusing an invalid one.
+    private let sessionLock = NSLock()
+    private var ownedSession: URLSession?
 
     init(profile: ConnectionProfile, credential: Credential?, session: URLSession? = nil) {
         self.profile = profile
         self.credential = credential
-        if let session {
-            self.session = session
-        } else {
+        injectedSession = session
+    }
+
+    private var session: URLSession {
+        if let injectedSession { return injectedSession }
+        return sessionLock.withLock {
+            if let ownedSession { return ownedSession }
             let configuration = URLSessionConfiguration.default
             configuration.timeoutIntervalForRequest = 60
             configuration.timeoutIntervalForResource = 1800
             configuration.waitsForConnectivity = true
-            self.session = URLSession(configuration: configuration)
+            let created = URLSession(
+                configuration: configuration,
+                delegate: WebDAVSessionDelegate(profile: profile, credential: credential),
+                delegateQueue: nil
+            )
+            ownedSession = created
+            return created
         }
     }
 
+    // URLSession keeps itself alive until invalidated; release it with the provider.
+    deinit {
+        ownedSession?.finishTasksAndInvalidate()
+    }
+
     func connect() async throws { _ = try await list(path: profile.initialPath) }
-    func disconnect() async { session.invalidateAndCancel() }
+
+    func disconnect() async {
+        if let injectedSession {
+            injectedSession.finishTasksAndInvalidate()
+            return
+        }
+        let session = sessionLock.withLock {
+            let current = ownedSession
+            ownedSession = nil
+            return current
+        }
+        session?.finishTasksAndInvalidate()
+    }
 
     func list(path: String) async throws -> [RemoteItem] {
-        var request = try makeRequest(path: path, method: "PROPFIND")
-        request.setValue("1", forHTTPHeaderField: "Depth")
-        request.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data(Self.propfindBody.utf8)
-        let (data, response) = try await session.data(for: request)
-        try validate(response, allowed: [207])
-
         let requested = RemotePath.normalize(path)
-        return try WebDAVXMLParser().parse(data).compactMap { entry in
+        return try await propfind(path: path, depth: "1").compactMap { entry in
             let normalized = try relativeRemotePath(fromDAVHref: entry.path)
             guard normalized != requested else { return nil }
-            let name = entry.displayName?.isEmpty == false ? entry.displayName! : (normalized as NSString).lastPathComponent
-            return RemoteItem(
-                name: name,
-                path: normalized,
-                kind: entry.isCollection ? .directory : .file,
-                size: entry.size,
-                modifiedAt: entry.modifiedAt,
-                createdAt: entry.createdAt,
-                isHidden: name.hasPrefix("."),
-                contentType: entry.contentType,
-                revision: .init(eTag: entry.eTag, modifiedAt: entry.modifiedAt, size: entry.size)
-            )
+            return item(for: entry, at: normalized)
         }.sorted {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -55,11 +69,45 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
     }
 
     func attributes(path: String) async throws -> RemoteItem {
-        let parent = RemotePath.parent(path)
-        guard let item = try await list(path: parent).first(where: { $0.path == RemotePath.normalize(path) }) else {
-            throw RemoteProviderError.notFound("The remote item was not found at \(path).")
+        // A Depth: 0 PROPFIND describes the item itself. Unlike listing the
+        // parent this also works for the root and does not transfer an entire
+        // directory listing to stat one file.
+        let requested = RemotePath.normalize(path)
+        let entries = try await propfind(path: path, depth: "0")
+        for entry in entries {
+            if try relativeRemotePath(fromDAVHref: entry.path) == requested {
+                return item(for: entry, at: requested)
+            }
         }
-        return item
+        throw RemoteProviderError.notFound("The remote item was not found at \(path).")
+    }
+
+    private func propfind(path: String, depth: String) async throws -> [WebDAVEntry] {
+        var request = try makeRequest(path: path, method: "PROPFIND")
+        request.setValue(depth, forHTTPHeaderField: "Depth")
+        request.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data(Self.propfindBody.utf8)
+        let (data, response) = try await session.data(for: request)
+        try validate(response, allowed: [207])
+        return try WebDAVXMLParser().parse(data)
+    }
+
+    /// The item name always comes from the href, never from `displayname`:
+    /// paths for rename, copy and paste are built from `name`, and servers such
+    /// as SharePoint report a display name that differs from the resource name.
+    private func item(for entry: WebDAVEntry, at path: String) -> RemoteItem {
+        let name = path == "/" ? "/" : (path as NSString).lastPathComponent
+        return RemoteItem(
+            name: name,
+            path: path,
+            kind: entry.isCollection ? .directory : .file,
+            size: entry.isCollection ? nil : entry.size,
+            modifiedAt: entry.modifiedAt,
+            createdAt: entry.createdAt,
+            isHidden: name.hasPrefix("."),
+            contentType: entry.contentType,
+            revision: .init(eTag: entry.eTag, modifiedAt: entry.modifiedAt, size: entry.size)
+        )
     }
 
     func download(path: String, to localURL: URL) async throws {
@@ -130,7 +178,10 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
         var request = URLRequest(url: try url(for: path))
         request.httpMethod = method
         request.setValue(AppVersion.userAgent, forHTTPHeaderField: "User-Agent")
-        if let credential {
+        // Preemptive Basic saves a round trip, but only over HTTPS: on plain
+        // HTTP it would expose the password to servers that expect Digest.
+        // Other schemes are answered by WebDAVSessionDelegate's challenge handler.
+        if let credential, request.url?.scheme?.lowercased() == "https" {
             let token = Data("\(credential.username):\(credential.password)".utf8).base64EncodedString()
             request.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -173,6 +224,15 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
         return parts
     }
 
+    /// Host and port that TLS challenges for this server report, used to key
+    /// the trust-on-first-use certificate pin.
+    func trustEndpoint() throws -> (host: String, port: Int) {
+        let parts = try baseComponents()
+        let host = parts.host ?? ""
+        let port = parts.port ?? (parts.scheme?.lowercased() == "https" ? 443 : 80)
+        return (host, port)
+    }
+
     func relativeRemotePath(fromDAVHref href: String) throws -> String {
         let encodedPath = URLComponents(string: href)?.percentEncodedPath ?? href
         let hrefPath = encodedPath
@@ -206,4 +266,53 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
     <?xml version="1.0" encoding="utf-8" ?>
     <d:propfind xmlns:d="DAV:"><d:prop><d:displayname/><d:resourcetype/><d:getcontentlength/><d:getlastmodified/><d:creationdate/><d:getetag/><d:getcontenttype/></d:prop></d:propfind>
     """
+}
+
+/// Answers authentication challenges for WebDAV: HTTP Digest/NTLM/Basic with
+/// the stored credential, and server trust according to the profile's
+/// certificate-verification setting.
+final class WebDAVSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let profile: ConnectionProfile
+    private let credential: Credential?
+
+    init(profile: ConnectionProfile, credential: Credential?) {
+        self.profile = profile
+        self.credential = credential
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        let space = challenge.protectionSpace
+        switch space.authenticationMethod {
+        case NSURLAuthenticationMethodServerTrust:
+            guard !profile.verifyTLS, let trust = space.serverTrust else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            if TLSCertificateTrust.evaluatePinned(trust, host: space.host, port: space.port) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+            }
+        case NSURLAuthenticationMethodHTTPDigest,
+             NSURLAuthenticationMethodHTTPBasic,
+             NSURLAuthenticationMethodNTLM:
+            // A second challenge means the server rejected these credentials;
+            // let it fail with 401 instead of looping.
+            guard let credential, challenge.previousFailureCount == 0 else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            completionHandler(
+                .useCredential,
+                URLCredential(user: credential.username, password: credential.password, persistence: .forSession)
+            )
+        default:
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
 }

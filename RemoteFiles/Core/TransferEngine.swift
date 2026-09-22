@@ -37,8 +37,13 @@ final class TransferEngine: ObservableObject {
     private var progressSnapshots: [UUID: ProgressSnapshot] = [:]
     private var pendingPersistenceTask: Task<Void, Never>?
     private let fileURL: URL
+    private let makeProvider: (ConnectionProfile) throws -> any RemoteFileProvider
 
-    init(fileURL: URL? = nil) {
+    init(
+        fileURL: URL? = nil,
+        makeProvider: @escaping (ConnectionProfile) throws -> any RemoteFileProvider = { try ProviderFactory.make(for: $0) }
+    ) {
+        self.makeProvider = makeProvider
         if let fileURL {
             self.fileURL = fileURL
         } else {
@@ -51,13 +56,15 @@ final class TransferEngine: ObservableObject {
         load()
     }
 
+    @discardableResult
     func copyFile(
         item: RemoteItem,
         from source: any RemoteFileProvider,
         to destination: any RemoteFileProvider,
         destinationPath: String,
-        overwrite: Bool = false
-    ) {
+        overwrite: Bool = false,
+        disconnectSource: Bool = false
+    ) -> UUID {
         let record = TransferRecord(
             fileName: item.name,
             sourceProfileID: source.profile.id,
@@ -73,14 +80,122 @@ final class TransferEngine: ObservableObject {
         )
         records.insert(record, at: 0)
         persistNow()
-        start(record: record, item: item, source: source, destination: destination, disconnectSource: false)
+        start(record: record, item: item, source: source, destination: destination, disconnectSource: disconnectSource)
+        return record.id
+    }
+
+    /// Copies files and folders between two connections (or within one)
+    /// through the transfer queue, one file at a time so each file gets its
+    /// own record, progress, pause/resume and retry. Folders are recreated on
+    /// the destination and name collisions get a " copy" suffix.
+    ///
+    /// When `removeSources` is true (a cross-server move) a source item is
+    /// deleted only after every file below it copied successfully.
+    ///
+    /// - Returns: true when every file completed.
+    @discardableResult
+    func copyItems(
+        _ items: [RemoteItem],
+        from sourceProfile: ConnectionProfile,
+        to destinationProfile: ConnectionProfile,
+        destinationDirectory: String,
+        removeSources: Bool = false
+    ) async throws -> Bool {
+        let source = try makeProvider(sourceProfile)
+        let destination = try makeProvider(destinationProfile)
+        defer {
+            Task {
+                await source.disconnect()
+                await destination.disconnect()
+            }
+        }
+        try await source.connect()
+        try await destination.connect()
+
+        var allCompleted = true
+        for item in items {
+            try Task.checkCancellation()
+            let target = try await RemoteFileOperations.availablePastePath(
+                for: item,
+                in: destinationDirectory,
+                provider: destination
+            )
+            let completed = try await copyTree(
+                item,
+                source: source,
+                destination: destination,
+                sourceProfile: sourceProfile,
+                destinationProfile: destinationProfile,
+                destinationPath: target
+            )
+            if completed, removeSources {
+                try await RemoteFileOperations.removeRecursively(item, provider: source)
+            }
+            allCompleted = allCompleted && completed
+        }
+        return allCompleted
+    }
+
+    private func copyTree(
+        _ item: RemoteItem,
+        source: any RemoteFileProvider,
+        destination: any RemoteFileProvider,
+        sourceProfile: ConnectionProfile,
+        destinationProfile: ConnectionProfile,
+        destinationPath: String
+    ) async throws -> Bool {
+        try Task.checkCancellation()
+        guard item.isDirectory else {
+            // Every file uses its own provider pair: `perform` disconnects its
+            // destination when it finishes, which must not tear down the
+            // connection this walk is still using.
+            let fileSource = try makeProvider(sourceProfile)
+            let fileDestination = try makeProvider(destinationProfile)
+            let id = copyFile(
+                item: item,
+                from: fileSource,
+                to: fileDestination,
+                destinationPath: destinationPath,
+                disconnectSource: true
+            )
+            if let task = tasks[id]?.task {
+                await withTaskCancellationHandler {
+                    await task.value
+                } onCancel: {
+                    task.cancel()
+                }
+            }
+            return records.first(where: { $0.id == id })?.state == .completed
+        }
+
+        do {
+            try await destination.createDirectory(path: destinationPath)
+        } catch {
+            guard (try? await destination.attributes(path: destinationPath))?.isDirectory == true else {
+                throw error
+            }
+        }
+        var allCompleted = true
+        for child in try await source.list(path: item.path) {
+            let completed = try await copyTree(
+                child,
+                source: source,
+                destination: destination,
+                sourceProfile: sourceProfile,
+                destinationProfile: destinationProfile,
+                destinationPath: RemotePath.join(destinationPath, child.name)
+            )
+            allCompleted = allCompleted && completed
+        }
+        return allCompleted
     }
 
     func uploadFile(
         localURL: URL,
         to destination: any RemoteFileProvider,
         destinationPath: String,
-        overwrite: Bool = false
+        overwrite: Bool = false,
+        retainForRetry: Bool = false
     ) async throws {
         let values = try localURL.resourceValues(forKeys: [.fileSizeKey])
         let totalBytes = values.fileSize.map(Int64.init)
@@ -112,7 +227,95 @@ final class TransferEngine: ObservableObject {
                 token: token
             )
         }
+        if retainForRetry {
+            retainLocalSourceIfUnfinished(localURL, recordID: record.id)
+        }
         try throwIfFailed(recordID: record.id)
+    }
+
+    /// Whether the transfer list can offer "Retry" for this record.
+    func canRetry(_ record: TransferRecord) -> Bool {
+        guard record.state == .failed || record.state == .cancelled,
+              !record.supportsResuming else { return false }
+        switch record.operationKind {
+        case .serverToServer:
+            return true
+        case .upload:
+            guard tasks[record.id] == nil else { return false }
+            return record.retainedLocalPath.map { FileManager.default.fileExists(atPath: $0) } ?? false
+        case .download:
+            return false
+        }
+    }
+
+    private var retainedUploadsDirectory: URL {
+        fileURL.deletingLastPathComponent().appendingPathComponent("RetainedUploads", isDirectory: true)
+    }
+
+    /// Moves a caller-owned (disposable) upload source into app storage when
+    /// the upload did not finish, so the user can retry it later even though
+    /// the caller deletes its staging directory.
+    private func retainLocalSourceIfUnfinished(_ localURL: URL, recordID id: UUID) {
+        guard let record = records.first(where: { $0.id == id }),
+              record.state == .failed || record.state == .cancelled else { return }
+        let container = retainedUploadsDirectory.appendingPathComponent(id.uuidString, isDirectory: true)
+        let retained = container.appendingPathComponent(localURL.lastPathComponent)
+        do {
+            try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: localURL, to: retained)
+        } catch {
+            try? FileManager.default.removeItem(at: container)
+            return
+        }
+        update(id) { $0.retainedLocalPath = retained.path }
+        persistNow()
+    }
+
+    private func startRetainedUpload(_ current: TransferRecord, profiles: [ConnectionProfile]) {
+        guard let path = current.retainedLocalPath, canRetry(current) else { return }
+        let id = current.id
+        let provider: any RemoteFileProvider
+        do {
+            guard let profile = profiles.first(where: { $0.id == current.destinationProfileID }) else {
+                throw RemoteProviderError.invalidConfiguration("The destination connection no longer exists.")
+            }
+            provider = try makeProvider(profile)
+        } catch {
+            update(id) {
+                $0.state = .failed
+                $0.errorMessage = error.localizedDescription
+            }
+            return
+        }
+        update(id) {
+            $0.state = .queued
+            $0.errorMessage = nil
+            $0.progress = 0
+            $0.transferredBytes = 0
+            $0.bytesPerSecond = nil
+        }
+        let localURL = URL(fileURLWithPath: path)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.startLocalTransfer(record: current) { [weak self] token in
+                guard let self else { return }
+                try await provider.connect()
+                try await self.performUpload(
+                    recordID: id,
+                    localURL: localURL,
+                    destination: provider,
+                    destinationPath: current.destinationPath,
+                    overwrite: current.overwrite,
+                    token: token
+                )
+            }
+            await provider.disconnect()
+            if self.records.first(where: { $0.id == id })?.state == .completed {
+                try? FileManager.default.removeItem(at: localURL.deletingLastPathComponent())
+                self.update(id) { $0.retainedLocalPath = nil }
+                self.persistNow()
+            }
+        }
     }
 
     func downloadFile(
@@ -160,9 +363,21 @@ final class TransferEngine: ObservableObject {
 
     func retry(_ record: TransferRecord, using connections: ConnectionStore) {
         guard let current = records.first(where: { $0.id == record.id }),
-              current.operationKind == .serverToServer,
               current.state == .failed || current.state == .cancelled else { return }
-        restart(current, using: connections)
+        switch current.operationKind {
+        case .serverToServer:
+            restart(current, using: connections)
+        case .upload:
+            retryUpload(current, profiles: connections.profiles)
+        case .download:
+            break
+        }
+    }
+
+    func retryUpload(_ record: TransferRecord, profiles: [ConnectionProfile]) {
+        guard let current = records.first(where: { $0.id == record.id }),
+              current.operationKind == .upload else { return }
+        startRetainedUpload(current, profiles: profiles)
     }
 
     func pause(_ record: TransferRecord) {
@@ -286,8 +501,8 @@ final class TransferEngine: ObservableObject {
             var sourceForCleanup: (any RemoteFileProvider)?
             var destinationForCleanup: (any RemoteFileProvider)?
             do {
-                let source = try ProviderFactory.make(for: sourceProfile)
-                let destination = try ProviderFactory.make(for: destinationProfile)
+                let source = try self.makeProvider(sourceProfile)
+                let destination = try self.makeProvider(destinationProfile)
                 sourceForCleanup = source
                 destinationForCleanup = destination
                 try await source.connect()
@@ -733,11 +948,14 @@ final class TransferEngine: ObservableObject {
         }
     }
 
-    func clearFinished() {
-        let removedIDs = records
-            .filter { $0.state == .completed || $0.state == .cancelled }
-            .map(\.id)
-        for id in removedIDs {
+    func clearFinished(using connections: ConnectionStore? = nil) {
+        clearFinished(profiles: connections?.profiles ?? [])
+    }
+
+    func clearFinished(profiles: [ConnectionProfile]) {
+        let removed = records.filter { $0.state == .completed || $0.state == .cancelled }
+        for record in removed {
+            let id = record.id
             progressSnapshots[id] = nil
             pendingRetries[id] = nil
             pauseRequests.remove(id)
@@ -749,12 +967,17 @@ final class TransferEngine: ObservableObject {
             } else {
                 executionOwnership[id] = nil
             }
+            discardLeftovers(of: record, profiles: profiles)
         }
         records.removeAll { $0.state == .completed || $0.state == .cancelled }
         persistNow()
     }
 
-    func remove(_ record: TransferRecord) {
+    func remove(_ record: TransferRecord, using connections: ConnectionStore? = nil) {
+        remove(record, profiles: connections?.profiles ?? [])
+    }
+
+    func remove(_ record: TransferRecord, profiles: [ConnectionProfile]) {
         guard let current = records.first(where: { $0.id == record.id }),
               current.state != .running, current.state != .queued else { return }
         if let active = tasks[current.id] {
@@ -768,8 +991,34 @@ final class TransferEngine: ObservableObject {
         committing.remove(current.id)
         finalizedTransfers.remove(current.id)
         progressSnapshots[current.id] = nil
+        discardLeftovers(of: current, profiles: profiles)
         records.removeAll { $0.id == current.id }
         persistNow()
+    }
+
+    /// A server-to-server transfer that did not complete keeps its hidden
+    /// partial file on the destination so it can resume. Once the user removes
+    /// the record nothing can resume it, so delete that partial (best effort:
+    /// it is usually already gone, and the destination may be offline).
+    private func discardLeftovers(of record: TransferRecord, profiles: [ConnectionProfile]) {
+        if let retained = record.retainedLocalPath {
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: retained).deletingLastPathComponent())
+        }
+        guard record.operationKind == .serverToServer,
+              record.state != .completed,
+              let profile = profiles.first(where: { $0.id == record.destinationProfileID }) else { return }
+        let partialPath = streamPartialPath(for: record.destinationPath, recordID: record.id)
+        let makeProvider = makeProvider
+        Task {
+            guard let provider = try? makeProvider(profile) else { return }
+            do {
+                try await provider.connect()
+                try await provider.remove(path: partialPath, isDirectory: false)
+            } catch {
+                // Missing partials and unreachable servers are expected here.
+            }
+            await provider.disconnect()
+        }
     }
 
     private func beginExecution(for id: UUID) -> TransferExecutionToken {

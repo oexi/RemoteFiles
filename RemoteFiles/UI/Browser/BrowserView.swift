@@ -37,6 +37,7 @@ struct BrowserView: View {
     @State private var copyItem: RemoteItem?
     @State private var pendingDeleteItem: RemoteItem?
     @State private var offlineWorkingPath: String?
+    @State private var linkedFile: RemoteItem?
     @FocusState private var searchFocused: Bool
 
     init(profile: ConnectionProfile) {
@@ -72,7 +73,7 @@ struct BrowserView: View {
                                 systemImage: "doc.on.clipboard"
                             ) {
                                 searchFocused = false
-                                Task { await model.paste(clipboard, using: connections) }
+                                Task { await model.paste(clipboard, using: connections, transfers: transfers) }
                             }
                         }
                         if model.capabilities.contains(.createDirectory) {
@@ -104,6 +105,11 @@ struct BrowserView: View {
             endSelection()
         }
         .task { await model.start() }
+        .navigationDestination(item: $linkedFile) { file in
+            if let provider = model.provider {
+                FileDetailView(provider: provider, item: file)
+            }
+        }
         .alert("New Folder", isPresented: $showingFolderPrompt) {
             TextField("Folder name", text: $newFolderName)
             Button("Cancel", role: .cancel) { newFolderName = "" }
@@ -128,6 +134,29 @@ struct BrowserView: View {
                 }
             )
             .ignoresSafeArea()
+        }
+        .confirmationDialog(
+            "Item Already Exists",
+            isPresented: Binding(
+                get: { model.pendingUploadConflict != nil },
+                set: { if !$0 { model.resolveUploadConflict(.stop, applyToAll: false) } }
+            ),
+            titleVisibility: .visible,
+            presenting: model.pendingUploadConflict
+        ) { conflict in
+            if !conflict.existingIsFolder {
+                Button("Replace") { model.resolveUploadConflict(.replace, applyToAll: false) }
+            }
+            Button("Keep Both") { model.resolveUploadConflict(.keepBoth, applyToAll: false) }
+            Button("Skip") { model.resolveUploadConflict(.skip, applyToAll: false) }
+            if !conflict.existingIsFolder {
+                Button("Replace All") { model.resolveUploadConflict(.replace, applyToAll: true) }
+            }
+            Button("Keep Both for All") { model.resolveUploadConflict(.keepBoth, applyToAll: true) }
+            Button("Skip All") { model.resolveUploadConflict(.skip, applyToAll: true) }
+            Button("Stop Upload", role: .cancel) { model.resolveUploadConflict(.stop, applyToAll: false) }
+        } message: { conflict in
+            Text("“\(conflict.name)” already exists in this folder.")
         }
         .alert("Rename", isPresented: Binding(
             get: { renameItem != nil },
@@ -187,20 +216,20 @@ struct BrowserView: View {
                 CopyDestinationView(
                     profiles: connections.profiles.filter { $0.id != provider.profile.id },
                     fileName: item.name
-                ) { destination in
-                    do {
-                        let destinationProvider = try ProviderFactory.make(for: destination)
-                        transfers.copyFile(
-                            item: item,
-                            from: provider,
-                            to: destinationProvider,
-                            destinationPath: RemotePath.join(
-                                RemotePath.normalize(destination.initialPath),
-                                item.name
+                ) { destination, folder in
+                    let sourceProfile = provider.profile
+                    Task {
+                        do {
+                            try await transfers.copyItems(
+                                [item],
+                                from: sourceProfile,
+                                to: destination,
+                                destinationDirectory: folder
                             )
-                        )
-                    } catch {
-                        model.errorMessage = error.localizedDescription
+                        } catch is CancellationError {
+                        } catch {
+                            model.errorMessage = error.localizedDescription
+                        }
                     }
                 }
             }
@@ -455,10 +484,8 @@ struct BrowserView: View {
             }
             .disabled(offlineWorkingPath != nil)
 
-            if !item.isDirectory {
-                Button("Copy to Server", systemImage: "arrow.right.doc.on.clipboard") {
-                    copyItem = item
-                }
+            Button("Copy to Server", systemImage: "arrow.right.doc.on.clipboard") {
+                copyItem = item
             }
         }
 
@@ -532,6 +559,19 @@ struct BrowserView: View {
                 )
             }
                 .buttonStyle(.plain)
+        } else if item.kind == .symbolicLink {
+            Button {
+                Task {
+                    if let file = await model.openLink(item) { linkedFile = file }
+                }
+            } label: {
+                FileRow(
+                    item: item,
+                    provider: model.provider,
+                    displaySize: item.size
+                )
+            }
+            .buttonStyle(.plain)
         } else if let provider = model.provider {
             NavigationLink {
                 FileDetailView(provider: provider, item: item)

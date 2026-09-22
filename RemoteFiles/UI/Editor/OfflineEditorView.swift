@@ -20,6 +20,7 @@ struct LocalTextEditorView: View {
     let onSaved: (() -> Void)?
 
     @State private var text = ""
+    @State private var savedText = ""
     @State private var encoding: TextEncoding = .utf8(byteOrderMark: false)
     @State private var loading = true
     @State private var saving = false
@@ -49,6 +50,9 @@ struct LocalTextEditorView: View {
             }
         }
         .task { await load() }
+        .unsavedChangesGuard(isDirty: !loading && loadError == nil && text != savedText) {
+            await save()
+        }
         .alert("Error", isPresented: Binding(
             get: { saveError != nil },
             set: { if !$0 { saveError = nil } }
@@ -69,6 +73,7 @@ struct LocalTextEditorView: View {
                 throw RemoteProviderError.unsupported("This appears to be a binary file, so it is not opened as text.")
             }
             text = decoded.text
+            savedText = decoded.text
             encoding = decoded.encoding
         } catch {
             loadError = error.localizedDescription
@@ -76,7 +81,8 @@ struct LocalTextEditorView: View {
         loading = false
     }
 
-    private func save() async {
+    @discardableResult
+    private func save() async -> Bool {
         saving = true
         defer { saving = false }
         do {
@@ -84,9 +90,12 @@ struct LocalTextEditorView: View {
                 throw RemoteProviderError.unsupported("The edited text cannot be saved in the file's original encoding.")
             }
             try data.write(to: url, options: .atomic)
+            savedText = text
             onSaved?()
+            return true
         } catch {
             saveError = error.localizedDescription
+            return false
         }
     }
 }

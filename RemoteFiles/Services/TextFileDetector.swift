@@ -7,6 +7,14 @@ enum TextEncoding: Equatable, Sendable {
     case utf8(byteOrderMark: Bool)
     case utf16LittleEndian(byteOrderMark: Bool)
     case utf16BigEndian(byteOrderMark: Bool)
+    /// GB 18030, a superset of GBK/GB2312, common for Chinese text files.
+    case gb18030
+
+    static let gb18030StringEncoding = String.Encoding(
+        rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        )
+    )
 
     static let utf8BOM: [UInt8] = [0xEF, 0xBB, 0xBF]
     static let utf16LittleEndianBOM: [UInt8] = [0xFF, 0xFE]
@@ -22,6 +30,8 @@ enum TextEncoding: Equatable, Sendable {
         case .utf16BigEndian(let byteOrderMark):
             guard let body = text.data(using: .utf16BigEndian) else { return nil }
             return (byteOrderMark ? Data(Self.utf16BigEndianBOM) : Data()) + body
+        case .gb18030:
+            return text.data(using: Self.gb18030StringEncoding)
         }
     }
 }
@@ -84,6 +94,15 @@ enum TextFileDetector {
                let value = String(data: data, encoding: .utf16BigEndian), looksLikeText(value) {
                 return DecodedText(text: value, encoding: .utf16BigEndian(byteOrderMark: false))
             }
+        }
+
+        // Legacy Chinese text (GBK/GB2312/GB18030) is not valid UTF-8. Only
+        // accept it when it decodes cleanly and still looks like text, so
+        // arbitrary binary data does not open in the editor.
+        if data.contains(where: { $0 >= 0x80 }),
+           let value = String(data: data, encoding: TextEncoding.gb18030StringEncoding),
+           looksLikeText(value) {
+            return DecodedText(text: value, encoding: .gb18030)
         }
         return nil
     }

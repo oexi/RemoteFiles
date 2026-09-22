@@ -172,6 +172,31 @@ final class FileProviderIdentityStore: @unchecked Sendable {
         return result
     }
 
+    /// Read-only lookup for the app, which must never write the extension's
+    /// identity state. Returns the identifier the extension reports for an
+    /// already-known path, or nil when resolving it would mint a new one
+    /// (the extension has not enumerated that item yet).
+    func knownIdentifier(
+        for path: String,
+        codec: FileProviderPathCodec
+    ) -> NSFileProviderItemIdentifier? {
+        guard let confined = RemotePath.confined(path, to: codec.rootPath) else { return nil }
+        if confined == RemotePath.normalize(codec.rootPath) {
+            return .rootContainer
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        let snapshot = state
+        defer { state = snapshot }
+        guard let identifier = try? identifierLocked(for: confined, codec: codec),
+              state.identifiers == snapshot.identifiers else {
+            return nil
+        }
+        return identifier
+    }
+
     /// Registers a batch of paths with one persistence operation.  Enumeration
     /// uses this to make already-observed descendants available for a later
     /// directory move without writing one file per item.

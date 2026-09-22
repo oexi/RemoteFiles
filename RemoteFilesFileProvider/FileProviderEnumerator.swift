@@ -24,10 +24,9 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
         task?.cancel()
         task = Task {
             do {
-                let credential = try CredentialVault.shared.load(for: profile.id)
-                let provider = try ProviderFactory.make(for: profile, credential: credential)
-                try await provider.connect()
-                defer { Task { await provider.disconnect() } }
+                let lease = try await FileProviderConnectionPool.shared.lease(for: profile)
+                defer { lease.release() }
+                let provider = lease.provider
                 let path = try identityStore.path(for: containerIdentifier, codec: codec)
                 let listedItems = try await provider.list(path: path)
                 let remoteItems = listedItems.filter { codec.containsDirectChild($0.path, of: path) }
@@ -94,10 +93,9 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 ) else {
                     throw NSFileProviderError(.syncAnchorExpired)
                 }
-                let credential = try CredentialVault.shared.load(for: profile.id)
-                let provider = try ProviderFactory.make(for: profile, credential: credential)
-                try await provider.connect()
-                defer { Task { await provider.disconnect() } }
+                let lease = try await FileProviderConnectionPool.shared.lease(for: profile)
+                defer { lease.release() }
+                let provider = lease.provider
 
                 let path = try identityStore.path(for: containerIdentifier, codec: codec)
                 let listedItems = try await provider.list(path: path)

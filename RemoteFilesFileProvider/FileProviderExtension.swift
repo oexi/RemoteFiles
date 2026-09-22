@@ -55,8 +55,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 if identifier == .rootContainer {
                     completionHandler(FileProviderItem(rootName: context.profile.name), nil)
                 } else {
-                    let provider = try await connectedProvider(context)
-                    defer { Task { await provider.disconnect() } }
+                    let lease = try await FileProviderConnectionPool.shared.lease(for: context.profile)
+                    defer { lease.release() }
+                    let provider = lease.provider
                     let path = try identityStore.path(for: identifier, codec: codec)
                     let remote = try await provider.attributes(path: path)
                     completionHandler(
@@ -97,8 +98,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let context = try requireContext()
                 let codec = context.codec
                 let identityStore = context.identityStore
-                let provider = try await connectedProvider(context)
-                defer { Task { await provider.disconnect() } }
+                let lease = try await FileProviderConnectionPool.shared.lease(for: context.profile)
+                defer { lease.release() }
+                let provider = lease.provider
                 let path = try identityStore.path(for: itemIdentifier, codec: codec)
                 let remote = try await provider.attributes(path: path)
                 let initialItem = try FileProviderItem(
@@ -154,8 +156,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let context = try requireContext()
                 let codec = context.codec
                 let identityStore = context.identityStore
-                let provider = try await connectedProvider(context)
-                defer { Task { await provider.disconnect() } }
+                let lease = try await FileProviderConnectionPool.shared.lease(for: context.profile)
+                defer { lease.release() }
+                let provider = lease.provider
                 let parentPath = try identityStore.path(for: itemTemplate.parentItemIdentifier, codec: codec)
                 let path = try codec.childPath(parent: parentPath, filename: itemTemplate.filename)
                 if itemTemplate.contentType?.conforms(to: .folder) == true {
@@ -206,8 +209,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let context = try requireContext()
                 let codec = context.codec
                 let identityStore = context.identityStore
-                let provider = try await connectedProvider(context)
-                defer { Task { await provider.disconnect() } }
+                let lease = try await FileProviderConnectionPool.shared.lease(for: context.profile)
+                defer { lease.release() }
+                let provider = lease.provider
                 var path = try identityStore.path(for: item.itemIdentifier, codec: codec)
                 let currentRemote = try await provider.attributes(path: path)
                 let currentItem = try FileProviderItem(
@@ -235,7 +239,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     path = desiredPath
                 }
                 if changedFields.contains(.contents), let newContents {
-                    try await provider.upload(from: newContents, to: path, overwrite: true)
+                    try await RemoteFileOperations.replaceFile(at: path, with: newContents, provider: provider)
                 }
                 let remote = try await provider.attributes(path: path)
                 progress.completedUnitCount = 100
@@ -271,8 +275,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let context = try requireContext()
                 let codec = context.codec
                 let identityStore = context.identityStore
-                let provider = try await connectedProvider(context)
-                defer { Task { await provider.disconnect() } }
+                let lease = try await FileProviderConnectionPool.shared.lease(for: context.profile)
+                defer { lease.release() }
+                let provider = lease.provider
                 let path = try identityStore.path(for: identifier, codec: codec)
                 let remote = try await provider.attributes(path: path)
                 let currentItem = try FileProviderItem(
@@ -302,12 +307,5 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     private func requireContext() throws -> DomainContext {
         guard let context else { throw NSFileProviderError(.providerNotFound) }
         return context
-    }
-
-    private func connectedProvider(_ context: DomainContext) async throws -> any RemoteFileProvider {
-        let credential = try CredentialVault.shared.load(for: context.profile.id)
-        let provider = try ProviderFactory.make(for: context.profile, credential: credential)
-        try await provider.connect()
-        return provider
     }
 }

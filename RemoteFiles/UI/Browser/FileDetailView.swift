@@ -58,18 +58,20 @@ struct FileDetailView: View {
             CopyDestinationView(
                 profiles: connections.profiles.filter { $0.id != provider.profile.id },
                 fileName: item.name
-            ) { destination in
-                do {
-                    let destinationProvider = try ProviderFactory.make(for: destination)
-                    let root = RemotePath.normalize(destination.initialPath)
-                    transfers.copyFile(
-                        item: item,
-                        from: provider,
-                        to: destinationProvider,
-                        destinationPath: RemotePath.join(root, item.name)
-                    )
-                } catch {
-                    copyError = error.localizedDescription
+            ) { destination, folder in
+                let sourceProfile = provider.profile
+                Task {
+                    do {
+                        try await transfers.copyItems(
+                            [item],
+                            from: sourceProfile,
+                            to: destination,
+                            destinationDirectory: folder
+                        )
+                    } catch is CancellationError {
+                    } catch {
+                        copyError = error.localizedDescription
+                    }
                 }
             }
         }
@@ -109,14 +111,16 @@ struct CopyDestinationView: View {
     @Environment(\.dismiss) private var dismiss
     let profiles: [ConnectionProfile]
     let fileName: String
-    let onSelect: (ConnectionProfile) -> Void
+    let onSelect: (ConnectionProfile, String) -> Void
 
     var body: some View {
         NavigationStack {
             List(profiles) { profile in
-                Button {
-                    onSelect(profile)
-                    dismiss()
+                NavigationLink {
+                    RemoteFolderPickerView(profile: profile) { folder in
+                        onSelect(profile, folder)
+                        dismiss()
+                    }
                 } label: {
                     Label {
                         VStack(alignment: .leading, spacing: 2) {
@@ -129,7 +133,6 @@ struct CopyDestinationView: View {
                         Image(systemName: profile.protocolType.systemImage)
                     }
                 }
-                .buttonStyle(.plain)
             }
             .overlay {
                 if profiles.isEmpty {

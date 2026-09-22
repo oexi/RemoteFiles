@@ -70,6 +70,12 @@ protocol RemoteFileProvider: Sendable {
     func accessControl(path: String) async throws -> RemoteAccessControlInfo
 }
 
+/// Implemented by providers whose `attributes(path:)` follows symbolic links
+/// (for example SFTP STAT) so callers can still tell a link from its target.
+protocol RemoteSymbolicLinkInspecting: Sendable {
+    func isSymbolicLink(path: String) async throws -> Bool
+}
+
 protocol RemoteChunkReadableProvider: Sendable {
     func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data
     func openReadSession(path: String, offset: UInt64) async throws -> (any RemoteChunkReadSession)?
