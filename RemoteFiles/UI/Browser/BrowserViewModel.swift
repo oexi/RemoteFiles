@@ -11,9 +11,17 @@ final class BrowserViewModel: ObservableObject {
     @Published var errorMessage: String?
 
     private(set) var provider: (any RemoteFileProvider)?
+    /// Incremented for every directory load so a slow, superseded listing can
+    /// never replace the contents of the folder the user navigated to later.
+    private var listGeneration = 0
+    private let makeProvider: (ConnectionProfile) throws -> any RemoteFileProvider
 
-    init(profile: ConnectionProfile) {
+    init(
+        profile: ConnectionProfile,
+        makeProvider: @escaping (ConnectionProfile) throws -> any RemoteFileProvider = { try ProviderFactory.make(for: $0) }
+    ) {
         self.profile = profile
+        self.makeProvider = makeProvider
         currentPath = RemotePath.normalize(profile.initialPath)
     }
 
@@ -22,34 +30,36 @@ final class BrowserViewModel: ObservableObject {
 
     func start() async {
         guard provider == nil else { return }
+        await refresh()
+    }
+
+    func refresh() async {
+        listGeneration += 1
+        let generation = listGeneration
+        let path = currentPath
         loading = true
-        defer { loading = false }
+        defer {
+            if generation == listGeneration { loading = false }
+        }
         do {
-            let provider = try ProviderFactory.make(for: profile)
-            try await provider.connect()
-            self.provider = provider
-            try await refreshImpl()
+            let listed = try await connectedProvider().list(path: path)
+            guard generation == listGeneration else { return }
+            items = listed
         } catch {
+            guard generation == listGeneration, !(error is CancellationError) else { return }
             errorMessage = error.localizedDescription
         }
     }
 
-    func refresh() async {
-        loading = true
-        defer { loading = false }
-        do { try await refreshImpl() }
-        catch { errorMessage = error.localizedDescription }
-    }
-
     func enter(_ item: RemoteItem) async {
         guard item.isDirectory else { return }
-        currentPath = item.path
+        navigate(to: item.path)
         await refresh()
     }
 
     func goUp() async {
         guard canGoUp else { return }
-        currentPath = RemotePath.parent(currentPath)
+        navigate(to: RemotePath.parent(currentPath))
         await refresh()
     }
 
@@ -216,9 +226,26 @@ final class BrowserViewModel: ObservableObject {
         await provider?.disconnect()
     }
 
-    private func refreshImpl() async throws {
-        guard let provider else { throw RemoteProviderError.notConnected }
-        items = try await provider.list(path: currentPath)
+    private func navigate(to path: String) {
+        currentPath = path
+        // Never show the previous folder's rows under the new path while the
+        // listing loads; actions on them would be applied to the wrong folder.
+        items = []
+    }
+
+    /// Returns the connected provider, creating it on first use or after a
+    /// failed initial connection so pull-to-refresh can recover.
+    private func connectedProvider() async throws -> any RemoteFileProvider {
+        if let provider { return provider }
+        let provider = try makeProvider(profile)
+        try await provider.connect()
+        if let existing = self.provider {
+            // Another refresh finished connecting while this one was waiting.
+            await provider.disconnect()
+            return existing
+        }
+        self.provider = provider
+        return provider
     }
 
     private func validatedName(_ name: String) -> String? {

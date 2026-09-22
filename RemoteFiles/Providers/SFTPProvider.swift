@@ -17,9 +17,25 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
     static let maxInFlightRequests = 16
     private static let transferBufferSize = 1_048_576
 
+    // Citadel's SSHClient is not marked Sendable; access is serialized by
+    // `stateLock` and the client itself is internally event-loop confined.
+    private struct Connection: @unchecked Sendable {
+        let ssh: SSHClient
+        let sftp: SFTPClient
+    }
+
+    private enum ConnectionSlot {
+        case ready(SFTPClient)
+        case pending(Task<Connection, Error>)
+    }
+
     private let credential: Credential?
-    private var ssh: SSHClient?
-    private var sftp: SFTPClient?
+    // Browsing, thumbnails and transfers share one provider concurrently.
+    // Connection state is guarded by `stateLock`, and concurrent callers share
+    // one in-flight connection attempt instead of each opening an SSH session.
+    private let stateLock = NSLock()
+    private var connection: Connection?
+    private var connectTask: Task<Connection, Error>?
 
     init(profile: ConnectionProfile, credential: Credential?) {
         self.profile = profile
@@ -27,28 +43,19 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
     }
 
     func connect() async throws {
-        let username = credential?.username ?? profile.username
-        guard !username.isEmpty else {
-            throw RemoteProviderError.authenticationRequired
-        }
-        let authentication = try makeAuthentication(username: username)
-        let validator = TOFUHostKeyValidator(host: profile.host, port: profile.port)
-        let settings = SSHClientSettings(
-            host: profile.host,
-            port: profile.port,
-            authenticationMethod: { authentication },
-            hostKeyValidator: .custom(validator)
-        )
-        let ssh = try await SSHClient.connect(to: settings)
-        self.ssh = ssh
-        self.sftp = try await ssh.openSFTP()
+        _ = try await client()
     }
 
     func disconnect() async {
-        try? await sftp?.close()
-        try? await ssh?.close()
-        sftp = nil
-        ssh = nil
+        let state = stateLock.withLock {
+            let state = (connection: connection, task: connectTask)
+            connection = nil
+            connectTask = nil
+            return state
+        }
+        state.task?.cancel()
+        try? await state.connection?.sftp.close()
+        try? await state.connection?.ssh.close()
     }
 
     func list(path: String) async throws -> [RemoteItem] {
@@ -382,11 +389,66 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         }
     }
 
+    /// Returns a live SFTP client, reconnecting when the previous SSH session
+    /// was closed by the server, an idle timeout or the app being suspended.
     private func client() async throws -> SFTPClient {
-        if let sftp { return sftp }
-        try await connect()
-        guard let sftp else { throw RemoteProviderError.notConnected }
-        return sftp
+        let (stale, slot) = stateLock.withLock { () -> (Connection?, ConnectionSlot) in
+            if let connection, connection.ssh.isConnected, connection.sftp.isActive {
+                return (nil, .ready(connection.sftp))
+            }
+            let previous = connection
+            connection = nil
+            if let connectTask { return (previous, .pending(connectTask)) }
+            let task = Task { try await self.establishConnection() }
+            connectTask = task
+            return (previous, .pending(task))
+        }
+        if let stale {
+            try? await stale.sftp.close()
+            try? await stale.ssh.close()
+        }
+        switch slot {
+        case .ready(let sftp):
+            return sftp
+        case .pending(let task):
+            do {
+                let established = try await task.value
+                stateLock.withLock {
+                    if connectTask == task {
+                        connectTask = nil
+                        connection = established
+                    }
+                }
+                return established.sftp
+            } catch {
+                stateLock.withLock {
+                    if connectTask == task { connectTask = nil }
+                }
+                throw error
+            }
+        }
+    }
+
+    private func establishConnection() async throws -> Connection {
+        let username = credential?.username ?? profile.username
+        guard !username.isEmpty else {
+            throw RemoteProviderError.authenticationRequired
+        }
+        let authentication = try makeAuthentication(username: username)
+        let validator = TOFUHostKeyValidator(host: profile.host, port: profile.port)
+        let settings = SSHClientSettings(
+            host: profile.host,
+            port: profile.port,
+            authenticationMethod: { authentication },
+            hostKeyValidator: .custom(validator)
+        )
+        let ssh = try await SSHClient.connect(to: settings)
+        do {
+            return Connection(ssh: ssh, sftp: try await ssh.openSFTP())
+        } catch {
+            try? await ssh.close()
+            throw error
+        }
     }
 
     private func makeAuthentication(username: String) throws -> SSHAuthenticationMethod {

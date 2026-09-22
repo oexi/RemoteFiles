@@ -1,17 +1,55 @@
 import Foundation
 
+/// The on-disk text encoding of a file opened in an editor. Saving must use
+/// the same encoding and byte-order mark, otherwise editing a UTF-16 or BOM
+/// file silently rewrites it as plain UTF-8.
+enum TextEncoding: Equatable, Sendable {
+    case utf8(byteOrderMark: Bool)
+    case utf16LittleEndian(byteOrderMark: Bool)
+    case utf16BigEndian(byteOrderMark: Bool)
+
+    static let utf8BOM: [UInt8] = [0xEF, 0xBB, 0xBF]
+    static let utf16LittleEndianBOM: [UInt8] = [0xFF, 0xFE]
+    static let utf16BigEndianBOM: [UInt8] = [0xFE, 0xFF]
+
+    func encode(_ text: String) -> Data? {
+        switch self {
+        case .utf8(let byteOrderMark):
+            return (byteOrderMark ? Data(Self.utf8BOM) : Data()) + Data(text.utf8)
+        case .utf16LittleEndian(let byteOrderMark):
+            guard let body = text.data(using: .utf16LittleEndian) else { return nil }
+            return (byteOrderMark ? Data(Self.utf16LittleEndianBOM) : Data()) + body
+        case .utf16BigEndian(let byteOrderMark):
+            guard let body = text.data(using: .utf16BigEndian) else { return nil }
+            return (byteOrderMark ? Data(Self.utf16BigEndianBOM) : Data()) + body
+        }
+    }
+}
+
+struct DecodedText: Equatable, Sendable {
+    let text: String
+    let encoding: TextEncoding
+}
+
 enum TextFileDetector {
     static func decode(_ data: Data) -> String? {
-        guard !data.isEmpty else { return "" }
+        decodeText(data)?.text
+    }
 
-        if data.starts(with: [0xEF, 0xBB, 0xBF]) {
+    static func decodeText(_ data: Data) -> DecodedText? {
+        guard !data.isEmpty else { return DecodedText(text: "", encoding: .utf8(byteOrderMark: false)) }
+
+        if data.starts(with: TextEncoding.utf8BOM) {
             return String(data: data.dropFirst(3), encoding: .utf8)
+                .map { DecodedText(text: $0, encoding: .utf8(byteOrderMark: true)) }
         }
-        if data.starts(with: [0xFF, 0xFE]) {
-            return String(data: data, encoding: .utf16LittleEndian)
+        if data.starts(with: TextEncoding.utf16LittleEndianBOM) {
+            return String(data: data.dropFirst(2), encoding: .utf16LittleEndian)
+                .map { DecodedText(text: $0, encoding: .utf16LittleEndian(byteOrderMark: true)) }
         }
-        if data.starts(with: [0xFE, 0xFF]) {
-            return String(data: data, encoding: .utf16BigEndian)
+        if data.starts(with: TextEncoding.utf16BigEndianBOM) {
+            return String(data: data.dropFirst(2), encoding: .utf16BigEndian)
+                .map { DecodedText(text: $0, encoding: .utf16BigEndian(byteOrderMark: true)) }
         }
 
         // Common binary signatures. Extensionless binaries should never fall through to the text editor.
@@ -29,7 +67,7 @@ enum TextFileDetector {
         if signatures.contains(where: { data.starts(with: $0) }) { return nil }
 
         if let utf8 = String(data: data, encoding: .utf8), looksLikeText(utf8) {
-            return utf8
+            return DecodedText(text: utf8, encoding: .utf8(byteOrderMark: false))
         }
 
         // Only try UTF-16 without a BOM when the byte layout actually resembles UTF-16 text.
@@ -40,11 +78,11 @@ enum TextFileDetector {
             let threshold = max(2, sample.count / 8)
             if oddNuls >= threshold,
                let value = String(data: data, encoding: .utf16LittleEndian), looksLikeText(value) {
-                return value
+                return DecodedText(text: value, encoding: .utf16LittleEndian(byteOrderMark: false))
             }
             if evenNuls >= threshold,
                let value = String(data: data, encoding: .utf16BigEndian), looksLikeText(value) {
-                return value
+                return DecodedText(text: value, encoding: .utf16BigEndian(byteOrderMark: false))
             }
         }
         return nil

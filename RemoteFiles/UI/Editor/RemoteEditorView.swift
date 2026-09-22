@@ -7,6 +7,7 @@ struct RemoteEditorView: View {
     @State private var text = ""
     @State private var localURL: URL?
     @State private var baseRevision: RemoteRevision?
+    @State private var encoding: TextEncoding = .utf8(byteOrderMark: false)
     @State private var loading = true
     @State private var saving = false
     @State private var loadError: String?
@@ -51,17 +52,22 @@ struct RemoteEditorView: View {
 
     private func load() async {
         do {
-            let url = try await CacheManager.shared.materialize(provider: provider, item: item, forceRefresh: true)
+            // The listing that produced `item` may be stale. Take the conflict
+            // baseline from the server before downloading, so the first save
+            // compares against the revision whose content is actually loaded.
+            let current = try await provider.attributes(path: item.path)
+            let url = try await CacheManager.shared.materialize(provider: provider, item: current, forceRefresh: true)
             let data = try Data(contentsOf: url)
             guard data.count <= 20 * 1024 * 1024 else {
                 throw RemoteProviderError.unsupported("Text files larger than 20 MB are not opened in the editor.")
             }
-            guard let decoded = TextFileDetector.decode(data) else {
+            guard let decoded = TextFileDetector.decodeText(data) else {
                 throw RemoteProviderError.unsupported("This appears to be a binary file, so it is not opened as text.")
             }
             localURL = url
-            text = decoded
-            baseRevision = item.revision
+            text = decoded.text
+            encoding = decoded.encoding
+            baseRevision = current.revision
             loading = false
         } catch {
             loadError = error.localizedDescription
@@ -81,7 +87,10 @@ struct RemoteEditorView: View {
                     return
                 }
             }
-            try Data(text.utf8).write(to: localURL, options: .atomic)
+            guard let data = encoding.encode(text) else {
+                throw RemoteProviderError.unsupported("The edited text cannot be saved in the file's original encoding.")
+            }
+            try data.write(to: localURL, options: .atomic)
             try await provider.upload(from: localURL, to: item.path, overwrite: true)
             if let refreshed = try? await provider.attributes(path: item.path) {
                 baseRevision = refreshed.revision

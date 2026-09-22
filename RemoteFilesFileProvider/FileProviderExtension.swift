@@ -3,27 +3,42 @@ import Foundation
 import UniformTypeIdentifiers
 
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+    private struct DomainContext {
+        let profile: ConnectionProfile
+        let codec: FileProviderPathCodec
+        let identityStore: FileProviderIdentityStore
+    }
+
     private let domain: NSFileProviderDomain
-    private let profile: ConnectionProfile
-    private let codec: FileProviderPathCodec
-    private let identityStore: FileProviderIdentityStore
+    /// Nil when the domain's connection profile is missing, e.g. the system
+    /// launched the extension while the app was removing a deleted connection.
+    /// The extension then stays alive and fails each request instead of
+    /// crashing in `init`.
+    private let context: DomainContext?
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
-        guard let profileID = UUID(uuidString: domain.identifier.rawValue),
-              let profile = FileProviderProfileStore.load(profileID: profileID) else {
-            fatalError("Invalid RemoteFiles File Provider domain")
+        if let profileID = UUID(uuidString: domain.identifier.rawValue),
+           let profile = FileProviderProfileStore.load(profileID: profileID) {
+            context = DomainContext(
+                profile: profile,
+                codec: FileProviderPathCodec(rootPath: profile.initialPath),
+                identityStore: FileProviderIdentityStore(profileID: profileID)
+            )
+        } else {
+            context = nil
         }
-        self.profile = profile
-        codec = FileProviderPathCodec(rootPath: profile.initialPath)
-        identityStore = FileProviderIdentityStore(profileID: profileID)
         super.init()
     }
 
     func invalidate() {}
 
     func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
-        FileProviderEnumerator(profile: profile, containerIdentifier: containerItemIdentifier)
+        if containerItemIdentifier == .workingSet || containerItemIdentifier == .trashContainer {
+            return FileProviderEmptyEnumerator()
+        }
+        let context = try requireContext()
+        return FileProviderEnumerator(profile: context.profile, containerIdentifier: containerItemIdentifier)
     }
 
     func item(
@@ -34,10 +49,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let progress = fileProviderProgress()
         let task = Task {
             do {
+                let context = try requireContext()
+                let codec = context.codec
+                let identityStore = context.identityStore
                 if identifier == .rootContainer {
-                    completionHandler(FileProviderItem(rootName: profile.name), nil)
+                    completionHandler(FileProviderItem(rootName: context.profile.name), nil)
                 } else {
-                    let provider = try await connectedProvider()
+                    let provider = try await connectedProvider(context)
                     defer { Task { await provider.disconnect() } }
                     let path = try identityStore.path(for: identifier, codec: codec)
                     let remote = try await provider.attributes(path: path)
@@ -53,7 +71,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 }
                 progress.completedUnitCount = 100
             } catch {
-                completionHandler(nil, error)
+                completionHandler(nil, FileProviderErrorMapping.map(error))
             }
         }
         bindCancellation(of: progress, to: task)
@@ -76,7 +94,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 }
             }
             do {
-                let provider = try await connectedProvider()
+                let context = try requireContext()
+                let codec = context.codec
+                let identityStore = context.identityStore
+                let provider = try await connectedProvider(context)
                 defer { Task { await provider.disconnect() } }
                 let path = try identityStore.path(for: itemIdentifier, codec: codec)
                 let remote = try await provider.attributes(path: path)
@@ -111,10 +132,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 progress.completedUnitCount = 100
                 keepTemporaryURL = true
                 completionHandler(url, confirmedItem, nil)
-            } catch is CancellationError {
-                completionHandler(nil, nil, CocoaError(.userCancelled))
             } catch {
-                completionHandler(nil, nil, error)
+                completionHandler(nil, nil, FileProviderErrorMapping.map(error))
             }
         }
         bindCancellation(of: progress, to: task)
@@ -132,7 +151,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let progress = fileProviderProgress()
         let task = Task {
             do {
-                let provider = try await connectedProvider()
+                let context = try requireContext()
+                let codec = context.codec
+                let identityStore = context.identityStore
+                let provider = try await connectedProvider(context)
                 defer { Task { await provider.disconnect() } }
                 let parentPath = try identityStore.path(for: itemTemplate.parentItemIdentifier, codec: codec)
                 let path = try codec.childPath(parent: parentPath, filename: itemTemplate.filename)
@@ -160,7 +182,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     nil
                 )
             } catch {
-                completionHandler(nil, fields, false, error)
+                completionHandler(nil, fields, false, FileProviderErrorMapping.map(error))
             }
         }
         bindCancellation(of: progress, to: task)
@@ -181,7 +203,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let pendingFields = changedFields.subtracting(appliedFields)
         let task = Task {
             do {
-                let provider = try await connectedProvider()
+                let context = try requireContext()
+                let codec = context.codec
+                let identityStore = context.identityStore
+                let provider = try await connectedProvider(context)
                 defer { Task { await provider.disconnect() } }
                 var path = try identityStore.path(for: item.itemIdentifier, codec: codec)
                 let currentRemote = try await provider.attributes(path: path)
@@ -226,7 +251,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     nil
                 )
             } catch {
-                completionHandler(nil, changedFields, false, error)
+                completionHandler(nil, changedFields, false, FileProviderErrorMapping.map(error))
             }
         }
         bindCancellation(of: progress, to: task)
@@ -243,7 +268,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let progress = fileProviderProgress()
         let task = Task {
             do {
-                let provider = try await connectedProvider()
+                let context = try requireContext()
+                let codec = context.codec
+                let identityStore = context.identityStore
+                let provider = try await connectedProvider(context)
                 defer { Task { await provider.disconnect() } }
                 let path = try identityStore.path(for: identifier, codec: codec)
                 let remote = try await provider.attributes(path: path)
@@ -264,16 +292,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 progress.completedUnitCount = 100
                 completionHandler(nil)
             } catch {
-                completionHandler(error)
+                completionHandler(FileProviderErrorMapping.map(error))
             }
         }
         bindCancellation(of: progress, to: task)
         return progress
     }
 
-    private func connectedProvider() async throws -> any RemoteFileProvider {
-        let credential = try CredentialVault.shared.load(for: profile.id)
-        let provider = try ProviderFactory.make(for: profile, credential: credential)
+    private func requireContext() throws -> DomainContext {
+        guard let context else { throw NSFileProviderError(.providerNotFound) }
+        return context
+    }
+
+    private func connectedProvider(_ context: DomainContext) async throws -> any RemoteFileProvider {
+        let credential = try CredentialVault.shared.load(for: context.profile.id)
+        let provider = try ProviderFactory.make(for: context.profile, credential: credential)
         try await provider.connect()
         return provider
     }

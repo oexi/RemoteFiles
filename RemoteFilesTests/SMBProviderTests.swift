@@ -35,3 +35,17 @@ private struct LegacyChunkWriter: RemoteChunkWritableProvider, Sendable {
 
     func writeChunk(path: String, data: Data, offset: UInt64) async throws { }
 }
+
+final class SMBConnectionFailureTests: XCTestCase {
+    func testTransportErrorsRetireTheConnection() {
+        XCTAssertTrue(SMBProvider.isConnectionFailure(POSIXError(.ECONNRESET)))
+        XCTAssertTrue(SMBProvider.isConnectionFailure(POSIXError(.EPIPE)))
+        XCTAssertTrue(SMBProvider.isConnectionFailure(POSIXError(.ETIMEDOUT)))
+    }
+
+    func testProtocolErrorsKeepTheConnection() {
+        XCTAssertFalse(SMBProvider.isConnectionFailure(RemoteProviderError.notFound("missing")))
+        XCTAssertFalse(SMBProvider.isConnectionFailure(RemoteProviderError.conflict("exists")))
+        XCTAssertFalse(SMBProvider.isConnectionFailure(POSIXError(.ENOENT)))
+    }
+}
