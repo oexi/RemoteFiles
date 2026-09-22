@@ -44,7 +44,7 @@ struct BrowserView: View {
         _model = StateObject(wrappedValue: BrowserViewModel(profile: profile))
     }
 
-    var body: some View {
+    private var browserBase: some View {
         VStack(spacing: 0) {
             browserHeader
             fileList
@@ -105,6 +105,10 @@ struct BrowserView: View {
             endSelection()
         }
         .task { await model.start() }
+    }
+
+    private var browserWithPrompts: some View {
+        browserBase
         .navigationDestination(item: $linkedFile) { file in
             if let provider = model.provider {
                 FileDetailView(provider: provider, item: file)
@@ -135,6 +139,10 @@ struct BrowserView: View {
             )
             .ignoresSafeArea()
         }
+    }
+
+    var body: some View {
+        browserWithPrompts
         .confirmationDialog(
             "Item Already Exists",
             isPresented: Binding(
