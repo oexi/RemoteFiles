@@ -65,7 +65,7 @@ struct TransferListView: View {
                             .tint(.orange)
                         }
                     } else if canResume(record) {
-                        Button(role: .destructive) { engine.remove(record) } label: {
+                        Button(role: .destructive) { engine.remove(record, using: connections) } label: {
                             Label("Delete", systemImage: "trash")
                         }
                         Button { engine.resume(record, using: connections) } label: {
@@ -73,7 +73,7 @@ struct TransferListView: View {
                         }
                         .tint(.blue)
                     } else if canRetry(record) {
-                        Button(role: .destructive) { engine.remove(record) } label: {
+                        Button(role: .destructive) { engine.remove(record, using: connections) } label: {
                             Label("Delete", systemImage: "trash")
                         }
                         Button { engine.retry(record, using: connections) } label: {
@@ -81,11 +81,11 @@ struct TransferListView: View {
                         }
                         .tint(.blue)
                     } else if canDelete(record) {
-                        Button(role: .destructive) { engine.remove(record) } label: {
+                        Button(role: .destructive) { engine.remove(record, using: connections) } label: {
                             Label("Delete", systemImage: "trash")
                         }
                     } else if record.state == .completed {
-                        Button(role: .destructive) { engine.remove(record) } label: {
+                        Button(role: .destructive) { engine.remove(record, using: connections) } label: {
                             Label("Delete", systemImage: "trash")
                         }
                     }
@@ -98,7 +98,7 @@ struct TransferListView: View {
             }
             .navigationTitle("Transfers")
             .toolbar {
-                Button("Clear Finished") { engine.clearFinished() }
+                Button("Clear Finished") { engine.clearFinished(using: connections) }
                     .disabled(!engine.records.contains(where: { $0.state == .completed || $0.state == .cancelled }))
             }
         }
@@ -146,9 +146,7 @@ struct TransferListView: View {
     }
 
     private func canRetry(_ record: TransferRecord) -> Bool {
-        record.operationKind == .serverToServer
-            && (record.state == .failed || record.state == .cancelled)
-            && !record.supportsResuming
+        engine.canRetry(record)
     }
 
     private func canDelete(_ record: TransferRecord) -> Bool {

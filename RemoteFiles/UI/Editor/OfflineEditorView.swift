@@ -20,6 +20,8 @@ struct LocalTextEditorView: View {
     let onSaved: (() -> Void)?
 
     @State private var text = ""
+    @State private var savedText = ""
+    @State private var encoding: TextEncoding = .utf8(byteOrderMark: false)
     @State private var loading = true
     @State private var saving = false
     @State private var loadError: String?
@@ -48,6 +50,9 @@ struct LocalTextEditorView: View {
             }
         }
         .task { await load() }
+        .unsavedChangesGuard(isDirty: !loading && loadError == nil && text != savedText) {
+            await save()
+        }
         .alert("Error", isPresented: Binding(
             get: { saveError != nil },
             set: { if !$0 { saveError = nil } }
@@ -64,24 +69,33 @@ struct LocalTextEditorView: View {
             guard data.count <= 20 * 1024 * 1024 else {
                 throw RemoteProviderError.unsupported("Text files larger than 20 MB are not opened in the editor.")
             }
-            guard let decoded = TextFileDetector.decode(data) else {
+            guard let decoded = TextFileDetector.decodeText(data) else {
                 throw RemoteProviderError.unsupported("This appears to be a binary file, so it is not opened as text.")
             }
-            text = decoded
+            text = decoded.text
+            savedText = decoded.text
+            encoding = decoded.encoding
         } catch {
             loadError = error.localizedDescription
         }
         loading = false
     }
 
-    private func save() async {
+    @discardableResult
+    private func save() async -> Bool {
         saving = true
         defer { saving = false }
         do {
-            try Data(text.utf8).write(to: url, options: .atomic)
+            guard let data = encoding.encode(text) else {
+                throw RemoteProviderError.unsupported("The edited text cannot be saved in the file's original encoding.")
+            }
+            try data.write(to: url, options: .atomic)
+            savedText = text
             onSaved?()
+            return true
         } catch {
             saveError = error.localizedDescription
+            return false
         }
     }
 }

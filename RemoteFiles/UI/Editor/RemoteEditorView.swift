@@ -5,8 +5,10 @@ struct RemoteEditorView: View {
     let item: RemoteItem
 
     @State private var text = ""
+    @State private var savedText = ""
     @State private var localURL: URL?
     @State private var baseRevision: RemoteRevision?
+    @State private var encoding: TextEncoding = .utf8(byteOrderMark: false)
     @State private var loading = true
     @State private var saving = false
     @State private var loadError: String?
@@ -36,6 +38,9 @@ struct RemoteEditorView: View {
             }
         }
         .task { await load() }
+        .unsavedChangesGuard(isDirty: !loading && loadError == nil && text != savedText) {
+            await save(force: false)
+        }
         .alert("Error", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK") { errorMessage = nil }
         } message: {
@@ -51,17 +56,23 @@ struct RemoteEditorView: View {
 
     private func load() async {
         do {
-            let url = try await CacheManager.shared.materialize(provider: provider, item: item, forceRefresh: true)
+            // The listing that produced `item` may be stale. Take the conflict
+            // baseline from the server before downloading, so the first save
+            // compares against the revision whose content is actually loaded.
+            let current = try await provider.attributes(path: item.path)
+            let url = try await CacheManager.shared.materialize(provider: provider, item: current, forceRefresh: true)
             let data = try Data(contentsOf: url)
             guard data.count <= 20 * 1024 * 1024 else {
                 throw RemoteProviderError.unsupported("Text files larger than 20 MB are not opened in the editor.")
             }
-            guard let decoded = TextFileDetector.decode(data) else {
+            guard let decoded = TextFileDetector.decodeText(data) else {
                 throw RemoteProviderError.unsupported("This appears to be a binary file, so it is not opened as text.")
             }
             localURL = url
-            text = decoded
-            baseRevision = item.revision
+            text = decoded.text
+            savedText = decoded.text
+            encoding = decoded.encoding
+            baseRevision = current.revision
             loading = false
         } catch {
             loadError = error.localizedDescription
@@ -69,8 +80,9 @@ struct RemoteEditorView: View {
         }
     }
 
-    private func save(force: Bool) async {
-        guard let localURL else { return }
+    @discardableResult
+    private func save(force: Bool) async -> Bool {
+        guard let localURL else { return false }
         saving = true
         defer { saving = false }
         do {
@@ -78,16 +90,23 @@ struct RemoteEditorView: View {
                 let current = try await provider.attributes(path: item.path).revision
                 if Self.hasChanged(baseRevision, current) {
                     showConflict = true
-                    return
+                    return false
                 }
             }
-            try Data(text.utf8).write(to: localURL, options: .atomic)
-            try await provider.upload(from: localURL, to: item.path, overwrite: true)
+            guard let data = encoding.encode(text) else {
+                throw RemoteProviderError.unsupported("The edited text cannot be saved in the file's original encoding.")
+            }
+            try data.write(to: localURL, options: .atomic)
+            try await RemoteFileOperations.replaceFile(at: item.path, with: localURL, provider: provider)
+            savedText = text
+            FileProviderDomainManager.signalChange(in: RemotePath.parent(item.path), profile: provider.profile)
             if let refreshed = try? await provider.attributes(path: item.path) {
                 baseRevision = refreshed.revision
             }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 

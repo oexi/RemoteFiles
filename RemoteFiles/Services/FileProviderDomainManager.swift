@@ -23,6 +23,33 @@ enum FileProviderDomainManager {
         }
     }
 
+    /// Asks the Files app to re-enumerate `directory` after the app changed
+    /// it, so uploads, deletes and renames show up without a manual refresh.
+    /// Directories the extension has never enumerated are skipped: the Files
+    /// app will list them fresh when it opens them.
+    static func signalChange(in directory: String, profile: ConnectionProfile) {
+        guard isRunningOutsideTests else { return }
+        let codec = FileProviderPathCodec(rootPath: profile.initialPath)
+        guard let identifier = FileProviderIdentityStore(profileID: profile.id)
+            .knownIdentifier(for: directory, codec: codec) else { return }
+        let domain = NSFileProviderDomain(
+            identifier: NSFileProviderDomainIdentifier(rawValue: profile.id.uuidString),
+            displayName: profile.name
+        )
+        let logger = Self.logger
+        NSFileProviderManager(for: domain)?.signalEnumerator(for: identifier) { error in
+            if let error {
+                logger.debug("File Provider signal failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private static var isRunningOutsideTests: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] == nil
+            && environment["XCTestBundlePath"] == nil
+    }
+
     static func registerAll(_ profiles: [ConnectionProfile]) {
         Task {
             do {

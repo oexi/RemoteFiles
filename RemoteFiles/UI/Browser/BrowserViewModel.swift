@@ -1,6 +1,19 @@
 import Foundation
 import Combine
 
+enum UploadConflictResolution: Equatable, Sendable {
+    case replace
+    case keepBoth
+    case skip
+    case stop
+}
+
+struct UploadConflict: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    let existingIsFolder: Bool
+}
+
 @MainActor
 final class BrowserViewModel: ObservableObject {
     let profile: ConnectionProfile
@@ -9,11 +22,21 @@ final class BrowserViewModel: ObservableObject {
     @Published private(set) var loading = false
     @Published private(set) var uploading = false
     @Published var errorMessage: String?
+    @Published private(set) var pendingUploadConflict: UploadConflict?
 
     private(set) var provider: (any RemoteFileProvider)?
+    /// Incremented for every directory load so a slow, superseded listing can
+    /// never replace the contents of the folder the user navigated to later.
+    private var listGeneration = 0
+    private let makeProvider: (ConnectionProfile) throws -> any RemoteFileProvider
+    private var conflictContinuation: CheckedContinuation<(resolution: UploadConflictResolution, applyToAll: Bool), Never>?
 
-    init(profile: ConnectionProfile) {
+    init(
+        profile: ConnectionProfile,
+        makeProvider: @escaping (ConnectionProfile) throws -> any RemoteFileProvider = { try ProviderFactory.make(for: $0) }
+    ) {
         self.profile = profile
+        self.makeProvider = makeProvider
         currentPath = RemotePath.normalize(profile.initialPath)
     }
 
@@ -22,34 +45,75 @@ final class BrowserViewModel: ObservableObject {
 
     func start() async {
         guard provider == nil else { return }
+        await refresh()
+    }
+
+    func refresh() async {
+        listGeneration += 1
+        let generation = listGeneration
+        let path = currentPath
         loading = true
-        defer { loading = false }
+        defer {
+            if generation == listGeneration { loading = false }
+        }
         do {
-            let provider = try ProviderFactory.make(for: profile)
-            try await provider.connect()
-            self.provider = provider
-            try await refreshImpl()
+            let listed = try await connectedProvider().list(path: path)
+            guard generation == listGeneration else { return }
+            items = listed
         } catch {
+            guard generation == listGeneration, !(error is CancellationError) else { return }
             errorMessage = error.localizedDescription
         }
     }
 
-    func refresh() async {
-        loading = true
-        defer { loading = false }
-        do { try await refreshImpl() }
-        catch { errorMessage = error.localizedDescription }
-    }
-
     func enter(_ item: RemoteItem) async {
         guard item.isDirectory else { return }
-        currentPath = item.path
+        navigate(to: item.path)
         await refresh()
+    }
+
+    /// Follows a symbolic link. A link to a folder is entered (keeping the
+    /// link's path, which the server resolves); for anything else the
+    /// resolved file is returned so the caller can open it.
+    func openLink(_ item: RemoteItem) async -> RemoteItem? {
+        guard let provider else { return nil }
+        do {
+            let target = try await provider.attributes(path: item.path)
+            var isFolder = target.isDirectory
+            if target.kind == .symbolicLink {
+                // Providers that report the link itself (FTP) cannot stat the
+                // target; a listing that is not just the entry itself means
+                // the link points to a folder.
+                let children = try await provider.list(path: item.path)
+                isFolder = !(children.count == 1 && children[0].name == item.name)
+            }
+            if isFolder {
+                await enter(RemoteItem(name: item.name, path: item.path, kind: .directory))
+                return nil
+            }
+            return RemoteItem(
+                name: item.name,
+                path: item.path,
+                kind: .file,
+                size: target.size ?? item.size,
+                modifiedAt: target.modifiedAt ?? item.modifiedAt,
+                createdAt: target.createdAt ?? item.createdAt,
+                isHidden: item.isHidden,
+                contentType: target.contentType,
+                permissions: target.permissions ?? item.permissions,
+                revision: target.revision
+            )
+        } catch is CancellationError {
+            return nil
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func goUp() async {
         guard canGoUp else { return }
-        currentPath = RemotePath.parent(currentPath)
+        navigate(to: RemotePath.parent(currentPath))
         await refresh()
     }
 
@@ -61,6 +125,7 @@ final class BrowserViewModel: ObservableObject {
         guard let provider else { return }
         do {
             try await provider.createDirectory(path: RemotePath.join(currentPath, name))
+            signalFilesApp(currentPath)
             await refresh()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -71,6 +136,7 @@ final class BrowserViewModel: ObservableObject {
         defer { loading = false }
         do {
             try await RemoteFileOperations.removeRecursively(item, provider: provider)
+            signalFilesApp(RemotePath.parent(item.path))
             await refresh()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -80,6 +146,9 @@ final class BrowserViewModel: ObservableObject {
         loading = true
         defer { loading = false }
         do {
+            defer {
+                for parent in Set(items.map { RemotePath.parent($0.path) }) { signalFilesApp(parent) }
+            }
             for item in items {
                 try Task.checkCancellation()
                 try await RemoteFileOperations.removeRecursively(item, provider: provider)
@@ -104,11 +173,12 @@ final class BrowserViewModel: ObservableObject {
                 to: RemotePath.join(RemotePath.parent(item.path), name),
                 overwrite: false
             )
+            signalFilesApp(RemotePath.parent(item.path))
             await refresh()
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func paste(_ clipboard: FileOperationClipboard, using connections: ConnectionStore) async {
+    func paste(_ clipboard: FileOperationClipboard, using connections: ConnectionStore, transfers: TransferEngine) async {
         guard let destination = provider,
               let operation = clipboard.operation,
               let sourceProfileID = clipboard.sourceProfileID,
@@ -123,62 +193,60 @@ final class BrowserViewModel: ObservableObject {
         defer { loading = false }
 
         let sameProfile = sourceProfileID == profile.id
-        var createdSource: (any RemoteFileProvider)?
+        let targetDirectory = RemotePath.normalize(currentPath)
+        let items = clipboard.items
         do {
-            let source: any RemoteFileProvider
             if sameProfile {
-                source = destination
-            } else {
-                let newSource = try ProviderFactory.make(for: sourceProfile)
-                try await newSource.connect()
-                createdSource = newSource
-                source = newSource
-            }
-
-            for item in clipboard.items {
-                try Task.checkCancellation()
-
-                if sameProfile,
-                   item.isDirectory,
-                   RemoteFileOperations.wouldPlaceDirectoryInsideItself(
-                       sourcePath: item.path,
-                       destinationParent: currentPath
-                   ) {
-                    throw RemoteProviderError.invalidConfiguration("A folder cannot be pasted inside itself.")
-                }
-
-                if operation == .move,
-                   sameProfile,
-                   RemotePath.parent(item.path) == RemotePath.normalize(currentPath) {
-                    continue
-                }
-
-                let target = try await RemoteFileOperations.availablePastePath(
-                    for: item,
-                    in: currentPath,
-                    provider: destination
-                )
-
-                if operation == .move, sameProfile {
-                    try await destination.move(from: item.path, to: target, overwrite: false)
-                } else {
-                    try await RemoteFileOperations.copyRecursively(
-                        item,
-                        from: source,
-                        to: destination,
-                        destinationPath: target
-                    )
-                    if operation == .move {
-                        try await RemoteFileOperations.removeRecursively(item, provider: source)
+                for item in items where item.isDirectory {
+                    if RemoteFileOperations.wouldPlaceDirectoryInsideItself(
+                        sourcePath: item.path,
+                        destinationParent: targetDirectory
+                    ) {
+                        throw RemoteProviderError.invalidConfiguration("A folder cannot be pasted inside itself.")
                     }
                 }
             }
 
-            if let createdSource { await createdSource.disconnect() }
-            if operation == .move { clipboard.clear() }
+            var completed = true
+            if operation == .move, sameProfile {
+                // A move within one server is a rename; nothing is transferred.
+                for item in items {
+                    try Task.checkCancellation()
+                    guard RemotePath.parent(item.path) != targetDirectory else { continue }
+                    let target = try await RemoteFileOperations.availablePastePath(
+                        for: item,
+                        in: targetDirectory,
+                        provider: destination
+                    )
+                    try await destination.move(from: item.path, to: target, overwrite: false)
+                }
+            } else {
+                // Copies (and cross-server moves) run through the transfer
+                // queue so every file shows progress and can be paused,
+                // cancelled or retried from the Transfers tab.
+                completed = try await transfers.copyItems(
+                    items,
+                    from: sourceProfile,
+                    to: profile,
+                    destinationDirectory: targetDirectory,
+                    removeSources: operation == .move
+                )
+            }
+
+            signalFilesApp(targetDirectory)
+            if operation == .move {
+                for parent in Set(items.map { RemotePath.parent($0.path) }) {
+                    FileProviderDomainManager.signalChange(in: parent, profile: sourceProfile)
+                }
+            }
+            if operation == .move, completed { clipboard.clear() }
+            if !completed {
+                errorMessage = String(localized: "Some items were not copied. See Transfers for details and to retry them.")
+            }
+            await refresh()
+        } catch is CancellationError {
             await refresh()
         } catch {
-            if let createdSource { await createdSource.disconnect() }
             errorMessage = error.localizedDescription
             await refresh()
         }
@@ -192,6 +260,8 @@ final class BrowserViewModel: ObservableObject {
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemoteFilesImports", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let targetDirectory = currentPath
+        var batch = UploadBatch()
 
         do {
             try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
@@ -203,22 +273,61 @@ final class BrowserViewModel: ObservableObject {
                 }.value
                 try await uploadRecursively(
                     localURL: stagedURL,
-                    remoteParent: currentPath,
+                    remoteParent: targetDirectory,
                     provider: provider,
-                    transfers: transfers
+                    transfers: transfers,
+                    batch: &batch
                 )
             }
-            await refresh()
-        } catch { errorMessage = error.localizedDescription }
+        } catch is CancellationError {
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        signalFilesApp(targetDirectory)
+        if batch.failedFiles > 0, errorMessage == nil {
+            errorMessage = String(
+                localized: "\(batch.failedFiles) file(s) could not be uploaded. Retry them from Transfers."
+            )
+        }
+        await refresh()
+    }
+
+    /// Called by the view when the user answers the name-conflict prompt.
+    func resolveUploadConflict(_ resolution: UploadConflictResolution, applyToAll: Bool) {
+        guard let continuation = conflictContinuation else { return }
+        conflictContinuation = nil
+        pendingUploadConflict = nil
+        continuation.resume(returning: (resolution, applyToAll))
     }
 
     func stop() async {
         await provider?.disconnect()
     }
 
-    private func refreshImpl() async throws {
-        guard let provider else { throw RemoteProviderError.notConnected }
-        items = try await provider.list(path: currentPath)
+    private func signalFilesApp(_ directory: String) {
+        FileProviderDomainManager.signalChange(in: directory, profile: profile)
+    }
+
+    private func navigate(to path: String) {
+        currentPath = path
+        // Never show the previous folder's rows under the new path while the
+        // listing loads; actions on them would be applied to the wrong folder.
+        items = []
+    }
+
+    /// Returns the connected provider, creating it on first use or after a
+    /// failed initial connection so pull-to-refresh can recover.
+    private func connectedProvider() async throws -> any RemoteFileProvider {
+        if let provider { return provider }
+        let provider = try makeProvider(profile)
+        try await provider.connect()
+        if let existing = self.provider {
+            // Another refresh finished connecting while this one was waiting.
+            await provider.disconnect()
+            return existing
+        }
+        self.provider = provider
+        return provider
     }
 
     private func validatedName(_ name: String) -> String? {
@@ -233,15 +342,22 @@ final class BrowserViewModel: ObservableObject {
         return trimmed
     }
 
+    private struct UploadBatch {
+        var rememberedResolution: UploadConflictResolution?
+        var failedFiles = 0
+    }
+
     private func uploadRecursively(
         localURL: URL,
         remoteParent: String,
         provider: any RemoteFileProvider,
-        transfers: TransferEngine
+        transfers: TransferEngine,
+        batch: inout UploadBatch
     ) async throws {
         let values = try localURL.resourceValues(forKeys: [.isDirectoryKey])
-        let remotePath = RemotePath.join(remoteParent, localURL.lastPathComponent)
+        var remotePath = RemotePath.join(remoteParent, localURL.lastPathComponent)
         if values.isDirectory == true {
+            // Existing folders are merged; name conflicts are resolved per file.
             do {
                 try await provider.createDirectory(path: remotePath)
             } catch {
@@ -258,16 +374,76 @@ final class BrowserViewModel: ObservableObject {
                     localURL: child,
                     remoteParent: remotePath,
                     provider: provider,
-                    transfers: transfers
+                    transfers: transfers,
+                    batch: &batch
                 )
             }
-        } else {
+            return
+        }
+
+        var overwrite = false
+        if let existing = try await existingItem(at: remotePath, provider: provider) {
+            let resolution: UploadConflictResolution
+            if let remembered = batch.rememberedResolution {
+                resolution = remembered
+            } else {
+                let answer = await askForConflictResolution(
+                    UploadConflict(name: localURL.lastPathComponent, existingIsFolder: existing.isDirectory)
+                )
+                resolution = answer.resolution
+                if answer.applyToAll { batch.rememberedResolution = resolution }
+            }
+            switch resolution {
+            case .stop:
+                throw CancellationError()
+            case .skip:
+                return
+            case .keepBoth:
+                remotePath = try await RemoteFileOperations.availablePastePath(
+                    for: RemoteItem(name: localURL.lastPathComponent, path: remotePath, kind: .file),
+                    in: remoteParent,
+                    provider: provider
+                )
+            case .replace:
+                guard !existing.isDirectory else {
+                    throw RemoteProviderError.conflict("A folder named \(existing.name) already exists and cannot be replaced by a file.")
+                }
+                overwrite = true
+            }
+        }
+
+        do {
             try await transfers.uploadFile(
                 localURL: localURL,
                 to: provider,
                 destinationPath: remotePath,
-                overwrite: false
+                overwrite: overwrite,
+                retainForRetry: true
             )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // Keep going with the rest of the batch; the failed file stays in
+            // the transfer list with a Retry action.
+            batch.failedFiles += 1
+        }
+    }
+
+    private func existingItem(at path: String, provider: any RemoteFileProvider) async throws -> RemoteItem? {
+        do {
+            return try await provider.attributes(path: path)
+        } catch {
+            guard RemoteProviderError.isNotFound(error) else { throw error }
+            return nil
+        }
+    }
+
+    private func askForConflictResolution(
+        _ conflict: UploadConflict
+    ) async -> (resolution: UploadConflictResolution, applyToAll: Bool) {
+        await withCheckedContinuation { continuation in
+            conflictContinuation = continuation
+            pendingUploadConflict = conflict
         }
     }
 

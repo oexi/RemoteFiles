@@ -1,46 +1,67 @@
 import Foundation
+import Network
 import SMBClient
 
 final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, RemoteChunkWritableProvider, @unchecked Sendable {
     let profile: ConnectionProfile
     let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .accessControl])
 
+    private enum ConnectionSlot {
+        case ready(SMBClient)
+        case pending(Task<ClientHandle, Error>)
+    }
+
+    // SMBClient is not marked Sendable; it is only handed between tasks
+    // through this handle while `stateLock` serializes ownership changes.
+    private struct ClientHandle: @unchecked Sendable {
+        let client: SMBClient
+    }
+
     private let credential: Credential?
-    private let client: SMBClient
-    private var connected = false
+    // SMBClient wraps a single NWConnection that cannot be restarted after it
+    // fails or is cancelled, so a dropped connection is replaced by a new
+    // client. All mutable connection state is guarded by `stateLock` because
+    // browsing, thumbnails and transfers call into the provider concurrently.
+    private let stateLock = NSLock()
+    private var activeClient: SMBClient?
+    private var connectTask: Task<ClientHandle, Error>?
     private var chunkFileIDs: [String: Data] = [:]
 
     init(profile: ConnectionProfile, credential: Credential?) {
         self.profile = profile
         self.credential = credential
-        client = SMBClient(host: profile.host, port: profile.port)
+    }
+
+    deinit {
+        connectTask?.cancel()
+        activeClient?.session.disconnect()
     }
 
     func connect() async throws {
-        guard !profile.share.isEmpty else {
-            throw RemoteProviderError.invalidConfiguration("SMB requires a share name.")
-        }
-        _ = try await client.login(
-            username: credential?.username ?? profile.username,
-            password: credential?.password,
-            domain: profile.domain.isEmpty ? nil : profile.domain
-        )
-        try await client.connectShare(profile.share)
-        connected = true
+        _ = try await ensureConnected()
     }
 
     func disconnect() async {
-        guard connected else { return }
-        for fileID in chunkFileIDs.values { _ = try? await client.session.close(fileId: fileID) }
-        chunkFileIDs.removeAll()
+        let state = stateLock.withLock {
+            let state = (client: activeClient, fileIDs: Array(chunkFileIDs.values), task: connectTask)
+            activeClient = nil
+            connectTask = nil
+            chunkFileIDs.removeAll()
+            return state
+        }
+        state.task?.cancel()
+        guard let client = state.client else { return }
+        for fileID in state.fileIDs { _ = try? await client.session.close(fileId: fileID) }
         _ = try? await client.disconnectShare()
         _ = try? await client.logoff()
-        connected = false
+        client.session.disconnect()
     }
 
     func list(path: String) async throws -> [RemoteItem] {
-        try await ensureConnected()
-        return try await client.listDirectory(path: smbPath(path)).compactMap { file in
+        let files = try await withClient(retryOnDisconnect: true) { client in
+            try await client.listDirectory(path: self.smbPath(path))
+        }
+        return files.compactMap { file in
             guard file.name != ".", file.name != ".." else { return nil }
             let remotePath = RemotePath.join(path, file.name)
             return RemoteItem(
@@ -60,10 +81,11 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func attributes(path: String) async throws -> RemoteItem {
-        try await ensureConnected()
         let stat: FileStat
         do {
-            stat = try await client.fileStat(path: smbPath(path))
+            stat = try await withClient(retryOnDisconnect: true) { client in
+                try await client.fileStat(path: self.smbPath(path))
+            }
         } catch {
             throw Self.normalizedAttributeError(error, path: path)
         }
@@ -81,34 +103,37 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func download(path: String, to localURL: URL) async throws {
-        try await ensureConnected()
-        try await client.download(path: smbPath(path), localPath: localURL, overwrite: true)
+        try await withClient(retryOnDisconnect: true) { client in
+            try await client.download(path: self.smbPath(path), localPath: localURL, overwrite: true)
+        }
     }
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
-        try await ensureConnected()
-        let fileExists = try await client.existFile(path: smbPath(path))
-        if !overwrite && fileExists {
-            throw RemoteProviderError.conflict("A file already exists at \(path).")
+        try await withClient { client in
+            let fileExists = try await client.existFile(path: self.smbPath(path))
+            if !overwrite && fileExists {
+                throw RemoteProviderError.conflict("A file already exists at \(path).")
+            }
+            try await client.upload(localPath: localURL, remotePath: self.smbPath(path))
         }
-        try await client.upload(localPath: localURL, remotePath: smbPath(path))
     }
 
     func readChunk(path: String, offset: UInt64, length: Int) async throws -> Data {
-        try await ensureConnected()
-        let reader = client.fileReader(path: smbPath(path))
-        do {
-            let data = try await reader.read(offset: offset, length: UInt32(clamping: length))
-            try await reader.close()
-            return data
-        } catch {
-            try? await reader.close()
-            throw error
+        try await withClient(retryOnDisconnect: true) { client in
+            let reader = client.fileReader(path: self.smbPath(path))
+            do {
+                let data = try await reader.read(offset: offset, length: UInt32(clamping: length))
+                try await reader.close()
+                return data
+            } catch {
+                try? await reader.close()
+                throw error
+            }
         }
     }
 
     func openReadSession(path: String, offset: UInt64) async throws -> (any RemoteChunkReadSession)? {
-        try await ensureConnected()
+        let client = try await ensureConnected()
         return SMBReadSession(
             reader: client.fileReader(path: smbPath(path)),
             offset: offset
@@ -117,56 +142,65 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
 
 
     func prepareChunkedUpload(path: String, overwrite: Bool, resumeOffset: UInt64) async throws -> UInt64 {
-        try await ensureConnected()
         let remotePath = smbPath(path)
-        if let old = chunkFileIDs.removeValue(forKey: remotePath) { _ = try? await client.session.close(fileId: old) }
+        return try await withClient { client in
+            if let old = self.stateLock.withLock({ self.chunkFileIDs.removeValue(forKey: remotePath) }) {
+                _ = try? await client.session.close(fileId: old)
+            }
 
-        let existingSize: UInt64?
-        do {
-            let stat = try await client.fileStat(path: remotePath)
-            existingSize = stat.isDirectory ? nil : stat.size
-        } catch {
-            let normalizedError = Self.normalizedAttributeError(error, path: path)
-            guard RemoteProviderError.isNotFound(normalizedError) else { throw error }
-            existingSize = nil
-        }
-        let canResume = resumeOffset > 0 && existingSize == resumeOffset
-        if !overwrite && !canResume && existingSize != nil {
-            throw RemoteProviderError.conflict("A file already exists at \(path).")
-        }
+            let existingSize: UInt64?
+            do {
+                let stat = try await client.fileStat(path: remotePath)
+                existingSize = stat.isDirectory ? nil : stat.size
+            } catch {
+                let normalizedError = Self.normalizedAttributeError(error, path: path)
+                guard RemoteProviderError.isNotFound(normalizedError) else { throw error }
+                existingSize = nil
+            }
+            let canResume = resumeOffset > 0 && existingSize == resumeOffset
+            if !overwrite && !canResume && existingSize != nil {
+                throw RemoteProviderError.conflict("A file already exists at \(path).")
+            }
 
-        let disposition: Create.CreateDisposition = canResume ? .open : (overwrite ? .overwriteIf : .create)
-        let response = try await client.session.create(
-            desiredAccess: [.readData, .writeData, .appendData, .readAttributes, .synchronize],
-            fileAttributes: [.archive, .normal],
-            shareAccess: [.read, .write, .delete],
-            createDisposition: disposition,
-            createOptions: [],
-            name: remotePath
-        )
-        chunkFileIDs[remotePath] = response.fileId
-        return canResume ? resumeOffset : 0
+            let disposition: Create.CreateDisposition = canResume ? .open : (overwrite ? .overwriteIf : .create)
+            let response = try await client.session.create(
+                desiredAccess: [.readData, .writeData, .appendData, .readAttributes, .synchronize],
+                fileAttributes: [.archive, .normal],
+                shareAccess: [.read, .write, .delete],
+                createDisposition: disposition,
+                createOptions: [],
+                name: remotePath
+            )
+            self.stateLock.withLock { self.chunkFileIDs[remotePath] = response.fileId }
+            return canResume ? resumeOffset : 0
+        }
     }
 
     func writeChunk(path: String, data: Data, offset: UInt64) async throws {
-        try await ensureConnected()
         let remotePath = smbPath(path)
-        guard let fileID = chunkFileIDs[remotePath] else {
-            throw RemoteProviderError.invalidResponse("SMB chunked upload was not prepared.")
-        }
-        var written = 0
-        while written < data.count {
-            let maxSize = max(1, Int(client.session.maxWriteSize))
-            let end = min(data.count, written + maxSize)
-            let slice = Data(data[written..<end])
-            _ = try await client.session.write(data: slice, fileId: fileID, offset: offset + UInt64(written))
-            written = end
+        try await withClient { client in
+            // Handles are invalidated together with the connection that opened
+            // them, so a reconnect surfaces here instead of writing to a stale ID.
+            guard let fileID = self.stateLock.withLock({ self.chunkFileIDs[remotePath] }) else {
+                throw RemoteProviderError.invalidResponse("SMB chunked upload was not prepared.")
+            }
+            var written = 0
+            while written < data.count {
+                let maxSize = max(1, Int(client.session.maxWriteSize))
+                let end = min(data.count, written + maxSize)
+                let slice = Data(data[written..<end])
+                _ = try await client.session.write(data: slice, fileId: fileID, offset: offset + UInt64(written))
+                written = end
+            }
         }
     }
 
     func finishChunkedUpload(path: String) async throws {
         let remotePath = smbPath(path)
-        if let fileID = chunkFileIDs.removeValue(forKey: remotePath) {
+        let state = stateLock.withLock {
+            (client: activeClient, fileID: chunkFileIDs.removeValue(forKey: remotePath))
+        }
+        if let client = state.client, let fileID = state.fileID {
             _ = try await client.session.close(fileId: fileID)
         }
     }
@@ -177,45 +211,142 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     /// `disconnect()` also calls this cleanup path for any outstanding handles.
     func abortChunkedUpload(path: String) async {
         let remotePath = smbPath(path)
-        guard let fileID = chunkFileIDs.removeValue(forKey: remotePath) else { return }
+        let state = stateLock.withLock {
+            (client: activeClient, fileID: chunkFileIDs.removeValue(forKey: remotePath))
+        }
+        guard let client = state.client, let fileID = state.fileID else { return }
         _ = try? await client.session.close(fileId: fileID)
     }
 
     func createDirectory(path: String) async throws {
-        try await ensureConnected()
-        try await client.createDirectory(path: smbPath(path))
+        try await withClient { client in
+            try await client.createDirectory(path: self.smbPath(path))
+        }
     }
 
     func remove(path: String, isDirectory: Bool) async throws {
-        try await ensureConnected()
-        if isDirectory {
-            try await client.deleteDirectory(path: smbPath(path))
-        } else {
-            try await client.deleteFile(path: smbPath(path))
+        try await withClient { client in
+            if isDirectory {
+                try await client.deleteDirectory(path: self.smbPath(path))
+            } else {
+                try await client.deleteFile(path: self.smbPath(path))
+            }
         }
     }
 
     func move(from: String, to: String, overwrite: Bool) async throws {
-        try await ensureConnected()
-        let destinationHasFile = try await client.existFile(path: smbPath(to))
-        let destinationHasDirectory = try await client.existDirectory(path: smbPath(to))
-        if !overwrite && (destinationHasFile || destinationHasDirectory) {
-            throw RemoteProviderError.conflict("An item already exists at \(to).")
+        try await withClient { client in
+            let destinationHasFile = try await client.existFile(path: self.smbPath(to))
+            let destinationHasDirectory = try await client.existDirectory(path: self.smbPath(to))
+            if !overwrite && (destinationHasFile || destinationHasDirectory) {
+                throw RemoteProviderError.conflict("An item already exists at \(to).")
+            }
+            try await client.move(from: self.smbPath(from), to: self.smbPath(to))
         }
-        try await client.move(from: smbPath(from), to: smbPath(to))
     }
 
     func accessControl(path: String) async throws -> RemoteAccessControlInfo {
-        try await ensureConnected()
-        let descriptor = try await client.session.querySecurityDescriptor(
-            path: smbPath(path),
-            securityInformation: [.owner, .group, .dacl]
-        )
+        let descriptor = try await withClient(retryOnDisconnect: true) { client in
+            try await client.session.querySecurityDescriptor(
+                path: self.smbPath(path),
+                securityInformation: [.owner, .group, .dacl]
+            )
+        }
         return try WindowsSecurityDescriptorParser.parse(descriptor)
     }
 
-    private func ensureConnected() async throws {
-        if !connected { try await connect() }
+    /// Runs `body` on a connected client. A connection-level failure retires
+    /// that client so the next call reconnects; idempotent operations may
+    /// retry once immediately, which transparently recovers an idle session
+    /// the server or network has already dropped.
+    private func withClient<T>(
+        retryOnDisconnect: Bool = false,
+        _ body: (SMBClient) async throws -> T
+    ) async throws -> T {
+        let client = try await ensureConnected()
+        do {
+            return try await body(client)
+        } catch let error where Self.isConnectionFailure(error) {
+            invalidate(client)
+            guard retryOnDisconnect else { throw error }
+            try Task.checkCancellation()
+            let reconnected = try await ensureConnected()
+            return try await body(reconnected)
+        }
+    }
+
+    private func ensureConnected() async throws -> SMBClient {
+        let slot: ConnectionSlot = stateLock.withLock {
+            if let activeClient { return .ready(activeClient) }
+            if let connectTask { return .pending(connectTask) }
+            let task = Task { () async throws -> ClientHandle in
+                let client = try await self.establishClient()
+                return ClientHandle(client: client)
+            }
+            connectTask = task
+            return .pending(task)
+        }
+        switch slot {
+        case .ready(let client):
+            return client
+        case .pending(let task):
+            do {
+                let client = try await task.value.client
+                stateLock.withLock {
+                    if connectTask == task {
+                        connectTask = nil
+                        activeClient = client
+                    }
+                }
+                return client
+            } catch {
+                stateLock.withLock {
+                    if connectTask == task { connectTask = nil }
+                }
+                throw error
+            }
+        }
+    }
+
+    private func establishClient() async throws -> SMBClient {
+        guard !profile.share.isEmpty else {
+            throw RemoteProviderError.invalidConfiguration("SMB requires a share name.")
+        }
+        let client = SMBClient(host: profile.host, port: profile.port)
+        client.onDisconnected = { [weak self, weak client] _ in
+            guard let self, let client else { return }
+            self.invalidate(client)
+        }
+        do {
+            _ = try await client.login(
+                username: credential?.username ?? profile.username,
+                password: credential?.password,
+                domain: profile.domain.isEmpty ? nil : profile.domain
+            )
+            try await client.connectShare(profile.share)
+        } catch {
+            client.session.disconnect()
+            throw error
+        }
+        return client
+    }
+
+    private func invalidate(_ client: SMBClient) {
+        let retired = stateLock.withLock {
+            guard activeClient === client else { return false }
+            activeClient = nil
+            chunkFileIDs.removeAll()
+            return true
+        }
+        if retired { client.session.disconnect() }
+    }
+
+    static func isConnectionFailure(_ error: Error) -> Bool {
+        if error is ConnectionError || error is NWError { return true }
+        let nsError = error as NSError
+        guard nsError.domain == NSPOSIXErrorDomain else { return false }
+        let codes: Set<Int32> = [ECONNRESET, ECONNABORTED, ENOTCONN, EPIPE, ETIMEDOUT, ENETDOWN, ENETUNREACH, EHOSTUNREACH]
+        return codes.contains(Int32(nsError.code))
     }
 
     private func smbPath(_ path: String) -> String {

@@ -3,7 +3,7 @@ import Crypto
 import Foundation
 import NIOCore
 
-final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, RemoteChunkWritableProvider, @unchecked Sendable {
+final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, RemoteChunkWritableProvider, RemoteSymbolicLinkInspecting, @unchecked Sendable {
     let profile: ConnectionProfile
     let capabilities = ProviderCapabilities([.list, .read, .write, .createDirectory, .delete, .move, .randomRead, .randomWrite, .resume, .permissions, .symbolicLinks])
 
@@ -17,38 +17,63 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
     static let maxInFlightRequests = 16
     private static let transferBufferSize = 1_048_576
 
+    // Citadel's SSHClient is not marked Sendable; access is serialized by
+    // `stateLock` and the client itself is internally event-loop confined.
+    private struct Connection: @unchecked Sendable {
+        let ssh: SSHClient
+        let sftp: SFTPClient
+        let keepAlive: Task<Void, Never>
+
+        func close() async {
+            keepAlive.cancel()
+            try? await sftp.close()
+            try? await ssh.close()
+        }
+    }
+
+    private static let keepAliveInterval: UInt64 = 30_000_000_000
+
+    private enum ConnectionSlot {
+        case ready(SFTPClient)
+        case pending(Task<Connection, Error>)
+    }
+
     private let credential: Credential?
-    private var ssh: SSHClient?
-    private var sftp: SFTPClient?
+    // Browsing, thumbnails and transfers share one provider concurrently.
+    // Connection state is guarded by `stateLock`, and concurrent callers share
+    // one in-flight connection attempt instead of each opening an SSH session.
+    private let stateLock = NSLock()
+    private var connection: Connection?
+    private var connectTask: Task<Connection, Error>?
 
     init(profile: ConnectionProfile, credential: Credential?) {
         self.profile = profile
         self.credential = credential
     }
 
-    func connect() async throws {
-        let username = credential?.username ?? profile.username
-        guard !username.isEmpty else {
-            throw RemoteProviderError.authenticationRequired
+    // Anything still using the provider (a browser, an open editor, an
+    // offline pin) keeps it alive, so the SSH session is closed exactly when
+    // the last user lets go instead of lingering for the life of the app.
+    deinit {
+        connectTask?.cancel()
+        if let connection {
+            Task { await connection.close() }
         }
-        let authentication = try makeAuthentication(username: username)
-        let validator = TOFUHostKeyValidator(host: profile.host, port: profile.port)
-        let settings = SSHClientSettings(
-            host: profile.host,
-            port: profile.port,
-            authenticationMethod: { authentication },
-            hostKeyValidator: .custom(validator)
-        )
-        let ssh = try await SSHClient.connect(to: settings)
-        self.ssh = ssh
-        self.sftp = try await ssh.openSFTP()
+    }
+
+    func connect() async throws {
+        _ = try await client()
     }
 
     func disconnect() async {
-        try? await sftp?.close()
-        try? await ssh?.close()
-        sftp = nil
-        ssh = nil
+        let state = stateLock.withLock {
+            let state = (connection: connection, task: connectTask)
+            connection = nil
+            connectTask = nil
+            return state
+        }
+        state.task?.cancel()
+        await state.connection?.close()
     }
 
     func list(path: String) async throws -> [RemoteItem] {
@@ -102,6 +127,15 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             permissions: attributes.permissions.map { $0 & 0o7777 },
             revision: .init(modifiedAt: modified, size: size)
         )
+    }
+
+    func isSymbolicLink(path: String) async throws -> Bool {
+        // Citadel only exposes STAT, which follows links. READDIR reports the
+        // link itself, so look the entry up in its parent listing.
+        let normalized = RemotePath.normalize(path)
+        guard normalized != "/" else { return false }
+        let siblings = try await list(path: RemotePath.parent(normalized))
+        return siblings.first { $0.path == normalized }?.kind == .symbolicLink
     }
 
     func setPermissions(path: String, permissions: UInt32) async throws {
@@ -382,11 +416,81 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         }
     }
 
+    /// Returns a live SFTP client, reconnecting when the previous SSH session
+    /// was closed by the server, an idle timeout or the app being suspended.
     private func client() async throws -> SFTPClient {
-        if let sftp { return sftp }
-        try await connect()
-        guard let sftp else { throw RemoteProviderError.notConnected }
-        return sftp
+        let (stale, slot) = stateLock.withLock { () -> (Connection?, ConnectionSlot) in
+            if let connection, connection.ssh.isConnected, connection.sftp.isActive {
+                return (nil, .ready(connection.sftp))
+            }
+            let previous = connection
+            connection = nil
+            if let connectTask { return (previous, .pending(connectTask)) }
+            let task = Task { try await self.establishConnection() }
+            connectTask = task
+            return (previous, .pending(task))
+        }
+        if let stale {
+            await stale.close()
+        }
+        switch slot {
+        case .ready(let sftp):
+            return sftp
+        case .pending(let task):
+            do {
+                let established = try await task.value
+                stateLock.withLock {
+                    if connectTask == task {
+                        connectTask = nil
+                        connection = established
+                    }
+                }
+                return established.sftp
+            } catch {
+                stateLock.withLock {
+                    if connectTask == task { connectTask = nil }
+                }
+                throw error
+            }
+        }
+    }
+
+    private func establishConnection() async throws -> Connection {
+        let username = credential?.username ?? profile.username
+        guard !username.isEmpty else {
+            throw RemoteProviderError.authenticationRequired
+        }
+        let authentication = try makeAuthentication(username: username)
+        let validator = TOFUHostKeyValidator(host: profile.host, port: profile.port)
+        let settings = SSHClientSettings(
+            host: profile.host,
+            port: profile.port,
+            authenticationMethod: { authentication },
+            hostKeyValidator: .custom(validator)
+        )
+        let ssh = try await SSHClient.connect(to: settings)
+        let sftp: SFTPClient
+        do {
+            sftp = try await ssh.openSFTP()
+        } catch {
+            try? await ssh.close()
+            throw error
+        }
+        // NAT gateways and servers drop idle SSH sessions; a cheap request
+        // every 30 s keeps the session open while the app is in use. The loop
+        // holds the client weakly and stops once the session is gone.
+        let keepAlive = Task { [weak sftp] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.keepAliveInterval)
+                guard !Task.isCancelled, let sftp, sftp.isActive else { return }
+                do {
+                    _ = try await sftp.getRealPath(atPath: ".")
+                } catch {
+                    return
+                }
+            }
+        }
+        return Connection(ssh: ssh, sftp: sftp, keepAlive: keepAlive)
     }
 
     private func makeAuthentication(username: String) throws -> SSHAuthenticationMethod {
@@ -397,16 +501,11 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
             let passphrase = credential?.privateKeyPassphrase.flatMap { value in
                 value.isEmpty ? nil : Data(value.utf8)
             }
-            let keyType = try SSHKeyDetection.detectPrivateKeyType(from: keyString)
-            if keyType == .ed25519 {
-                let key = try Curve25519.Signing.PrivateKey(sshEd25519: keyString, decryptionKey: passphrase)
-                return .ed25519(username: username, privateKey: key)
-            }
-            if keyType == .rsa {
-                let key = try Insecure.RSA.PrivateKey(sshRsa: keyString, decryptionKey: passphrase)
-                return .rsa(username: username, privateKey: key)
-            }
-            throw RemoteProviderError.unsupported("This OpenSSH private-key type is not supported yet. Use Ed25519 or RSA.")
+            return try SSHPrivateKeyLoader.authenticationMethod(
+                username: username,
+                key: keyString,
+                passphrase: passphrase
+            )
         }
 
         guard let password = credential?.password, !password.isEmpty else {

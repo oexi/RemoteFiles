@@ -24,10 +24,9 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
         task?.cancel()
         task = Task {
             do {
-                let credential = try CredentialVault.shared.load(for: profile.id)
-                let provider = try ProviderFactory.make(for: profile, credential: credential)
-                try await provider.connect()
-                defer { Task { await provider.disconnect() } }
+                let lease = try await FileProviderConnectionPool.shared.lease(for: profile)
+                defer { lease.release() }
+                let provider = lease.provider
                 let path = try identityStore.path(for: containerIdentifier, codec: codec)
                 let listedItems = try await provider.list(path: path)
                 let remoteItems = listedItems.filter { codec.containsDirectChild($0.path, of: path) }
@@ -43,10 +42,13 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                         providerCapabilities: provider.capabilities
                     )
                 }
+                // A misbehaving server can list the same path twice; keep the
+                // first entry instead of trapping the extension.
                 let identifiers = Dictionary(
-                    uniqueKeysWithValues: zip(remoteItems, items).map {
+                    zip(remoteItems, items).map {
                         ($0.0.path, $0.1.itemIdentifier.rawValue)
-                    }
+                    },
+                    uniquingKeysWith: { first, _ in first }
                 )
                 _ = try await FileProviderSnapshotStore.shared.save(
                     profileID: profile.id,
@@ -65,7 +67,7 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 }
                 observer.finishEnumerating(upTo: nil)
             } catch {
-                observer.finishEnumeratingWithError(error)
+                observer.finishEnumeratingWithError(FileProviderErrorMapping.map(error))
             }
         }
     }
@@ -91,10 +93,9 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 ) else {
                     throw NSFileProviderError(.syncAnchorExpired)
                 }
-                let credential = try CredentialVault.shared.load(for: profile.id)
-                let provider = try ProviderFactory.make(for: profile, credential: credential)
-                try await provider.connect()
-                defer { Task { await provider.disconnect() } }
+                let lease = try await FileProviderConnectionPool.shared.lease(for: profile)
+                defer { lease.release() }
+                let provider = lease.provider
 
                 let path = try identityStore.path(for: containerIdentifier, codec: codec)
                 let listedItems = try await provider.list(path: path)
@@ -113,9 +114,10 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                     )
                 }
                 let currentIdentifiersByPath = Dictionary(
-                    uniqueKeysWithValues: zip(remoteItems, currentItems).map {
+                    zip(remoteItems, currentItems).map {
                         ($0.0.path, $0.1.itemIdentifier.rawValue)
-                    }
+                    },
+                    uniquingKeysWith: { first, _ in first }
                 )
                 let currentIdentifiers = Set(currentIdentifiersByPath.values)
 
@@ -163,8 +165,31 @@ final class FileProviderEnumerator: NSObject, NSFileProviderEnumerator {
                 guard !Task.isCancelled else { return }
                 observer.finishEnumeratingChanges(upTo: snapshot.anchor, moreComing: false)
             } catch {
-                observer.finishEnumeratingWithError(error)
+                observer.finishEnumeratingWithError(FileProviderErrorMapping.map(error))
             }
         }
+    }
+}
+
+/// Enumerates containers this provider does not materialize: the working set
+/// (RemoteFiles does not track recently-used or tagged items across folders)
+/// and the trash (deletes are permanent on every supported protocol). The
+/// system still asks for these regularly, so answer with a stable empty set
+/// instead of an "unknown identifier" error.
+final class FileProviderEmptyEnumerator: NSObject, NSFileProviderEnumerator {
+    private static let anchor = NSFileProviderSyncAnchor(rawValue: Data("empty".utf8))
+
+    func invalidate() {}
+
+    func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
+        observer.finishEnumerating(upTo: nil)
+    }
+
+    func enumerateChanges(for observer: NSFileProviderChangeObserver, from syncAnchor: NSFileProviderSyncAnchor) {
+        observer.finishEnumeratingChanges(upTo: Self.anchor, moreComing: false)
+    }
+
+    func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
+        completionHandler(Self.anchor)
     }
 }

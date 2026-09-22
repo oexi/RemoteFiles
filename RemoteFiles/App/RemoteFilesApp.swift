@@ -6,6 +6,7 @@ struct RemoteFilesApp: App {
     @StateObject private var transfers = TransferEngine()
     @StateObject private var offline = OfflineStore()
     @StateObject private var clipboard = FileOperationClipboard()
+    @StateObject private var backgroundActivity = TransferBackgroundActivity()
     @AppStorage(AppPreferenceKey.appearance) private var appearanceRawValue = AppAppearance.system.rawValue
     @AppStorage(AppPreferenceKey.language) private var languageRawValue = AppLanguage.system.rawValue
 
@@ -26,6 +27,7 @@ struct RemoteFilesApp: App {
                 .environmentObject(clipboard)
                 .preferredColorScheme(appearance.colorScheme)
                 .environment(\.locale, language.locale)
+                .task { backgroundActivity.attach(to: transfers) }
         }
     }
 }

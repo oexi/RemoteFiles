@@ -117,6 +117,9 @@ struct TransferRecord: Identifiable, Hashable, Codable, Sendable {
     /// Best-effort preflight fact used to avoid treating an unrelated existing
     /// destination of the same size as a completed transfer after a crash.
     var commitDestinationExisted: Bool?
+    /// App-owned copy of a failed upload's local file. Present only while the
+    /// upload can still be retried from the transfer list.
+    var retainedLocalPath: String?
 
     var operationKind: TransferKind { kind ?? .serverToServer }
     var supportsResuming: Bool { isResumable ?? false }
