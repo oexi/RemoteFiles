@@ -16,12 +16,12 @@ xcodebuild -project RemoteFiles.xcodeproj -scheme RemoteFiles \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
   -parallel-testing-enabled NO -only-testing:RemoteFilesTests test
 # Single test: -only-testing:RemoteFilesTests/TransferEngineTests/testSomething
-# UI smoke test: -only-testing:RemoteFilesUITests/LaunchTests/testLaunchesOnIOS26
+# UI smoke test: -only-testing:RemoteFilesUITests/LaunchTests/testLaunches
 ```
 
 - **No local Swift toolchain (e.g. Linux sessions):** CI is the compiler.
-  - Run `gh workflow run ios-ci.yml --ref <branch>`; it builds, checks the extension's Info.plist, runs unit tests and the launch test.
-  - Logs come back as the `ios-ci-logs` artifact: `gh run download <id> -n ios-ci-logs`, then grep `build.log` for `error:` and `test.log` for `Test Suite`.
+  - Run `gh workflow run ci.yml --ref <branch>`; it builds, checks the extension's Info.plist, runs unit tests and the launch test.
+  - Logs come back as the `ci-logs` artifact: `gh run download <id> -n ci-logs`, then grep `build.log` for `error:` and `test.log` for `Test Suite`.
   - CI runs on pull requests and manual dispatch only, not on pushes to `main`.
 - **Parallel testing must stay off.** Several tests use `URLProtocol` mocks with static state.
 - **No linter or formatter.** Run `git diff --check` before committing.

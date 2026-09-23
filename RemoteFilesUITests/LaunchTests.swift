@@ -5,7 +5,7 @@ final class LaunchTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testLaunchesOnIOS26() throws {
+    func testLaunches() throws {
         let app = XCUIApplication()
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
