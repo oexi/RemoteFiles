@@ -36,10 +36,6 @@ struct SettingsView: View {
                     Text("FTP, FTPS, SFTP, SMB, WebDAV and NFS")
                 }
 
-                Section("Compatibility") {
-                    Text("iOS 17–26 · iPadOS 17–26")
-                }
-
                 Section("Cache") {
                     LabeledContent("Cache Usage") {
                         if let cacheUsage {

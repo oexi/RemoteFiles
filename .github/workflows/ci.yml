@@ -1,4 +1,4 @@
-name: iOS CI
+name: CI
 
 on:
   pull_request:
@@ -8,27 +8,33 @@ permissions:
   contents: read
 
 concurrency:
-  group: ios-ci-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  XCODE_MAJOR: "27"
+  IOS_SIMULATOR_MAJOR: "27"
 
 jobs:
   build-and-test:
-    runs-on: macos-26
+    name: Build and test (iOS Simulator)
+    # macOS host image that ships Xcode 27 and the iOS 27 Simulator runtime.
+    runs-on: xcode-27
     timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select and verify Xcode 26
+      - name: Select and verify Xcode
         run: |
           set -euo pipefail
           VERSION_OUTPUT="$(xcodebuild -version)"
           CURRENT="${VERSION_OUTPUT%%$'\n'*}"
-          if ! grep -Eq '^Xcode 26([.]|$)' <<< "$CURRENT"; then
-            XCODE_APP="$(find /Applications -maxdepth 1 -type d -name 'Xcode_26*.app' -print | sort -V | tail -n 1)"
+          if ! grep -Eq "^Xcode ${XCODE_MAJOR}([.]|\$)" <<< "$CURRENT"; then
+            XCODE_APP="$(find /Applications -maxdepth 1 -type d -name "Xcode_${XCODE_MAJOR}*.app" -print | sort -V | tail -n 1)"
             if [ -z "$XCODE_APP" ]; then
-              echo "Xcode 26 is required but was not found." >&2
+              echo "Xcode ${XCODE_MAJOR} is required but was not found." >&2
               printf '%s\n' "$VERSION_OUTPUT" >&2
               exit 1
             fi
@@ -37,7 +43,7 @@ jobs:
             CURRENT="${VERSION_OUTPUT%%$'\n'*}"
           fi
           printf '%s\n' "$VERSION_OUTPUT" | tee xcode-version.log
-          grep -Eq '^Xcode 26([.]|$)' <<< "$CURRENT"
+          grep -Eq "^Xcode ${XCODE_MAJOR}([.]|\$)" <<< "$CURRENT"
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -49,9 +55,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .derivedData
-          key: ios-derived-${{ runner.arch }}-${{ hashFiles('project.yml') }}
+          key: derived-data-xcode${{ env.XCODE_MAJOR }}-${{ runner.arch }}-${{ hashFiles('project.yml') }}
           restore-keys: |
-            ios-derived-${{ runner.arch }}-
+            derived-data-xcode${{ env.XCODE_MAJOR }}-${{ runner.arch }}-
 
       - name: Resolve Swift packages
         run: |
@@ -63,12 +69,13 @@ jobs:
             -derivedDataPath .derivedData \
             | tee resolve-packages.log
 
-      - name: Select simulator
+      - name: Select iOS Simulator
         id: simulator
         run: |
           set -euo pipefail
           UDID="$(python3 - <<'PY'
           import json
+          import os
           import subprocess
 
           payload = json.loads(subprocess.check_output([
@@ -76,14 +83,14 @@ jobs:
           ]))
 
           for runtime, devices in payload.get("devices", {}).items():
-              if "iOS-26" not in runtime:
+              if f"iOS-{os.environ['IOS_SIMULATOR_MAJOR']}-" not in runtime:
                   continue
               for device in devices:
                   if device.get("isAvailable") and device.get("name", "").startswith("iPhone"):
                       print(device["udid"])
                       raise SystemExit(0)
 
-          raise SystemExit("No available iPhone Simulator found")
+          raise SystemExit(f"No available iOS {os.environ['IOS_SIMULATOR_MAJOR']} iPhone Simulator found")
           PY
           )"
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
@@ -117,7 +124,7 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionFileProviderSupportsEnumeration' "$EXT/Info.plist" | grep -Fx 'true'
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionFileProviderDocumentGroup' "$EXT/Info.plist" | grep -Fx 'group.com.oexi.RemoteFiles'
 
-      - name: Boot iOS 26 Simulator
+      - name: Boot iOS Simulator
         run: |
           set -euo pipefail
           xcrun simctl shutdown all || true
@@ -142,7 +149,7 @@ jobs:
             test-without-building \
             | tee test.log
 
-      - name: Launch app on iOS 26
+      - name: Run UI launch test
         run: |
           set -o pipefail
           xcodebuild \
@@ -154,7 +161,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             -parallel-testing-enabled NO \
-            -only-testing:RemoteFilesUITests/LaunchTests/testLaunchesOnIOS26 \
+            -only-testing:RemoteFilesUITests/LaunchTests/testLaunches \
             test-without-building \
             | tee ui-smoke.log
 
@@ -162,7 +169,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-ci-logs
+          name: ci-logs
           path: |
             resolve-packages.log
             build.log
