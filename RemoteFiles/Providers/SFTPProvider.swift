@@ -2,6 +2,7 @@ import Citadel
 import Crypto
 import Foundation
 import NIOCore
+import NIOSSH
 
 final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, RemoteChunkWritableProvider, RemoteSymbolicLinkInspecting, @unchecked Sendable {
     let profile: ConnectionProfile
@@ -462,13 +463,24 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         }
         let authentication = try makeAuthentication(username: username)
         let validator = TOFUHostKeyValidator(host: profile.host, port: profile.port)
-        let settings = SSHClientSettings(
+        var settings = SSHClientSettings(
             host: profile.host,
             port: profile.port,
             authenticationMethod: { authentication },
             hostKeyValidator: .custom(validator)
         )
-        let ssh = try await SSHClient.connect(to: settings)
+        // NIOSSH on its own only offers AES-GCM ciphers, ECDH key exchange
+        // and Ed25519/ECDSA host keys. Dropbear (OpenWrt, many NAS and
+        // embedded boxes) supports none of those ciphers, so the handshake
+        // fails with keyExchangeNegotiationFailure. Citadel's extended set
+        // adds aes128-ctr, diffie-hellman-group14 and ssh-rsa.
+        settings.algorithms = .all
+        let ssh: SSHClient
+        do {
+            ssh = try await SSHClient.connect(to: settings)
+        } catch {
+            throw Self.normalizedSSHError(error)
+        }
         let sftp: SFTPClient
         do {
             sftp = try await ssh.openSFTP()
@@ -826,6 +838,25 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
                 throw error
             }
             batchStart = batchEnd
+        }
+    }
+
+    // NIOSSHError is a struct, so its bridged NSError text is only
+    // "NIOSSH.NIOSSHError error 1". Turn the common handshake failures into
+    // something a user can act on.
+    static func normalizedSSHError(_ error: Error) -> Error {
+        guard let sshError = error as? NIOSSHError else { return error }
+        switch sshError.type {
+        case .keyExchangeNegotiationFailure:
+            return RemoteProviderError.unsupported("The SSH server does not offer a cipher, key exchange or host key algorithm RemoteFiles supports. (\(sshError))")
+        case .unsupportedVersion:
+            return RemoteProviderError.unsupported("The server does not speak SSH protocol version 2. (\(sshError))")
+        case .invalidHostKeyForKeyExchange, .invalidExchangeHashSignature, .unknownPublicKey, .unknownSignature:
+            return RemoteProviderError.unsupported("The SSH server's host key could not be verified. (\(sshError))")
+        case .tcpShutdown:
+            return RemoteProviderError.invalidResponse("The SSH server closed the connection during the handshake. (\(sshError))")
+        default:
+            return RemoteProviderError.invalidResponse("SSH handshake failed: \(sshError)")
         }
     }
 
