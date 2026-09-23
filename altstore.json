@@ -10,12 +10,21 @@
       "subtitle": "FTP, FTPS, SFTP, SMB, WebDAV and NFS file manager",
       "localizedDescription": "Browse and manage remote files on iPhone and iPad. RemoteFiles supports offline files, cross-server transfers, text editing, archive extraction and integration with the iOS Files app.",
       "iconURL": "https://raw.githubusercontent.com/oexi/RemoteFiles/main/RemoteFiles/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
-      "version": "0.4.1",
-      "versionDate": "2026-09-23T08:26:15Z",
-      "versionDescription": "Fix SFTP handshake with Dropbear servers; Rename CI workflow and test on iOS 27; drop Compatibility row from Settings; Add CLAUDE.md with build workflow and...",
-      "downloadURL": "https://github.com/oexi/RemoteFiles/releases/download/v0.4.1/RemoteFiles-0.4.1-build24-unsigned.ipa",
-      "size": 30999226,
+      "version": "0.4.2",
+      "versionDate": "2026-09-23T13:32:56Z",
+      "versionDescription": "Show symlinked folders as folders and confirm every delete",
+      "downloadURL": "https://github.com/oexi/RemoteFiles/releases/download/v0.4.2/RemoteFiles-0.4.2-build25-unsigned.ipa",
+      "size": 31009707,
       "versions": [
+        {
+          "version": "0.4.2",
+          "buildVersion": "25",
+          "date": "2026-09-23T13:32:56Z",
+          "localizedDescription": "Show symlinked folders as folders and confirm every delete",
+          "downloadURL": "https://github.com/oexi/RemoteFiles/releases/download/v0.4.2/RemoteFiles-0.4.2-build25-unsigned.ipa",
+          "size": 31009707,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "0.4.1",
           "buildVersion": "24",
