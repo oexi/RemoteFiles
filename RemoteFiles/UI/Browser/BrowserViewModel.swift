@@ -77,6 +77,10 @@ final class BrowserViewModel: ObservableObject {
     /// resolved file is returned so the caller can open it.
     func openLink(_ item: RemoteItem) async -> RemoteItem? {
         guard let provider else { return nil }
+        if item.linkTargetKind == .directory {
+            await enter(RemoteItem(name: item.name, path: item.path, kind: .directory))
+            return nil
+        }
         do {
             let target = try await provider.attributes(path: item.path)
             var isFolder = target.isDirectory

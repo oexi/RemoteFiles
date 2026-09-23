@@ -189,18 +189,21 @@ struct BrowserView: View {
         } message: {
             Text("This permanently deletes \(selectedPaths.count) selected item(s). Non-empty folders and their contents will also be deleted.")
         }
-        .alert("Delete Folder?", isPresented: Binding(
-            get: { pendingDeleteItem != nil },
-            set: { if !$0 { pendingDeleteItem = nil } }
-        )) {
+        .alert(
+            pendingDeleteItem?.isDirectory == true ? LocalizedStringKey("Delete Folder?") : LocalizedStringKey("Delete Item?"),
+            isPresented: Binding(
+                get: { pendingDeleteItem != nil },
+                set: { if !$0 { pendingDeleteItem = nil } }
+            ),
+            presenting: pendingDeleteItem
+        ) { item in
             Button("Cancel", role: .cancel) { pendingDeleteItem = nil }
             Button("Delete", role: .destructive) {
-                guard let item = pendingDeleteItem else { return }
                 pendingDeleteItem = nil
                 Task { await model.delete(item) }
             }
-        } message: {
-            Text("This permanently deletes the folder and everything inside it.")
+        } message: { item in
+            Text(deleteConfirmationMessage(for: item))
         }
         .sheet(item: $permissionItem, onDismiss: {
             Task { await model.refresh() }
@@ -331,7 +334,7 @@ struct BrowserView: View {
                             FileRow(
                                 item: item,
                                 provider: model.provider,
-                                displaySize: item.isDirectory ? nil : item.size
+                                displaySize: item.isFolderLike ? nil : item.size
                             )
                         }
                     }
@@ -344,11 +347,7 @@ struct BrowserView: View {
                         .swipeActions(edge: .trailing) {
                             if model.capabilities.contains(.delete) {
                                 Button(role: .destructive) {
-                                    if item.isDirectory {
-                                        pendingDeleteItem = item
-                                    } else {
-                                        Task { await model.delete(item) }
-                                    }
+                                    pendingDeleteItem = item
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
@@ -519,11 +518,7 @@ struct BrowserView: View {
         if model.capabilities.contains(.delete) {
             Divider()
             Button("Delete", systemImage: "trash", role: .destructive) {
-                if item.isDirectory {
-                    pendingDeleteItem = item
-                } else {
-                    Task { await model.delete(item) }
-                }
+                pendingDeleteItem = item
             }
         }
     }
@@ -554,6 +549,16 @@ struct BrowserView: View {
 
     private var visibleItems: ArraySlice<RemoteItem> {
         filteredItems.prefix(displayLimit)
+    }
+
+    private func deleteConfirmationMessage(for item: RemoteItem) -> LocalizedStringKey {
+        if item.isDirectory {
+            return "This permanently deletes the folder and everything inside it."
+        }
+        if item.kind == .symbolicLink {
+            return "This permanently deletes the link “\(item.name)”. The item it points to is kept."
+        }
+        return "This permanently deletes “\(item.name)”."
     }
 
     @ViewBuilder
@@ -617,16 +622,25 @@ private struct FileRow: View {
                 } else {
                     WhiteSurFileIconView(
                         fileName: item.name,
-                        isDirectory: item.isDirectory,
+                        isDirectory: item.isFolderLike,
                         size: 36
                     )
+                    .overlay(alignment: .bottomLeading) {
+                        if item.kind == .symbolicLink {
+                            Image(systemName: "arrow.turn.up.right")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.secondary)
+                                .padding(2)
+                                .background(.background, in: Circle())
+                        }
+                    }
                 }
             }
             .frame(width: 36, height: 36)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.name).lineLimit(1)
                 HStack(spacing: 8) {
-                    if !item.isDirectory {
+                    if !item.isFolderLike {
                         if let size = displaySize {
                             Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
                         } else {
@@ -673,10 +687,10 @@ private struct RemoteItemPropertiesView: View {
                 Section("General") {
                     LabeledContent("Name", value: item.name)
                     LabeledContent("Type") {
-                        Text(item.isDirectory ? LocalizedStringKey("Folder") : LocalizedStringKey("File"))
+                        Text(item.isFolderLike ? LocalizedStringKey("Folder") : LocalizedStringKey("File"))
                     }
                     LabeledContent("Path", value: item.path)
-                    if !item.isDirectory {
+                    if !item.isFolderLike {
                         LabeledContent("Size") {
                             if let size = resolvedSize ?? item.size {
                                 Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
@@ -725,7 +739,7 @@ private struct RemoteItemPropertiesView: View {
     }
 
     private func loadSize() async {
-        guard !item.isDirectory, item.size == nil else { return }
+        guard !item.isFolderLike, item.size == nil else { return }
         do {
             let attributes = try await provider.attributes(path: item.path)
             resolvedSize = attributes.size

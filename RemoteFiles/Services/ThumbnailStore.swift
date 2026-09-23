@@ -26,7 +26,7 @@ final class ThumbnailStore {
     }
 
     func canThumbnail(_ item: RemoteItem) -> Bool {
-        guard !item.isDirectory else { return false }
+        guard !item.isFolderLike else { return false }
         if let size = item.size, size > 25 * 1024 * 1024 { return false }
         let ext = (item.name as NSString).pathExtension.lowercased()
         return ["jpg", "jpeg", "png", "gif", "heic", "webp", "pdf"].contains(ext)

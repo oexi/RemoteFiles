@@ -23,10 +23,15 @@ struct RemoteItem: Identifiable, Hashable, Sendable {
     let contentType: String?
     let permissions: UInt32?
     let revision: RemoteRevision
+    /// What a symbolic link points to, when the provider could resolve it.
+    /// `kind` stays `.symbolicLink` so deleting the entry removes only the link.
+    let linkTargetKind: RemoteItemKind?
 
     var isDirectory: Bool { kind == .directory }
+    /// A folder, or a link to one: shown and opened as a folder.
+    var isFolderLike: Bool { isDirectory || (kind == .symbolicLink && linkTargetKind == .directory) }
 
-    init(name: String, path: String, kind: RemoteItemKind, size: Int64? = nil, modifiedAt: Date? = nil, createdAt: Date? = nil, isHidden: Bool = false, contentType: String? = nil, permissions: UInt32? = nil, revision: RemoteRevision = .init()) {
+    init(name: String, path: String, kind: RemoteItemKind, size: Int64? = nil, modifiedAt: Date? = nil, createdAt: Date? = nil, isHidden: Bool = false, contentType: String? = nil, permissions: UInt32? = nil, revision: RemoteRevision = .init(), linkTargetKind: RemoteItemKind? = nil) {
         self.name = name
         self.path = path
         self.kind = kind
@@ -37,6 +42,7 @@ struct RemoteItem: Identifiable, Hashable, Sendable {
         self.contentType = contentType
         self.permissions = permissions
         self.revision = revision
+        self.linkTargetKind = linkTargetKind
     }
 }
 

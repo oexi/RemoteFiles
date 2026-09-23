@@ -108,6 +108,9 @@
 "The first host key is pinned automatically. Later key changes are blocked." = "首次連線時會自動固定主機金鑰，之後的金鑰變更將被阻止。";
 "The file changed on the server after it was opened. Overwriting may discard another edit." = "檔案開啟後已在伺服器上變更，覆寫可能會遺失其他修改。";
 "This permanently deletes the folder and everything inside it." = "這會永久刪除該資料夾及其中的所有內容。";
+"Delete Item?" = "刪除項目？";
+"This permanently deletes the link “%@”. The item it points to is kept." = "這會永久刪除連結「%@」，其指向的項目會保留。";
+"This permanently deletes “%@”." = "這會永久刪除「%@」。";
 "Enter an octal Unix mode from 0000 to 7777. The server may reject permission changes for files you do not own or when its permission extension is read-only." = "請輸入 0000 到 7777 的八進位 Unix 權限。對於不屬於你的檔案或唯讀權限擴充功能，伺服器可能拒絕修改。";
 "of" = "/";
 "Queued" = "等待中";

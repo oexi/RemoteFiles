@@ -108,6 +108,9 @@
 "The first host key is pinned automatically. Later key changes are blocked." = "The first host key is pinned automatically. Later key changes are blocked.";
 "The file changed on the server after it was opened. Overwriting may discard another edit." = "The file changed on the server after it was opened. Overwriting may discard another edit.";
 "This permanently deletes the folder and everything inside it." = "This permanently deletes the folder and everything inside it.";
+"Delete Item?" = "Delete Item?";
+"This permanently deletes the link “%@”. The item it points to is kept." = "This permanently deletes the link “%@”. The item it points to is kept.";
+"This permanently deletes “%@”." = "This permanently deletes “%@”.";
 "Enter an octal Unix mode from 0000 to 7777. The server may reject permission changes for files you do not own or when its permission extension is read-only." = "Enter an octal Unix mode from 0000 to 7777. The server may reject permission changes for files you do not own or when its permission extension is read-only.";
 "of" = "of";
 "Queued" = "Queued";

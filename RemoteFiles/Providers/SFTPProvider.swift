@@ -82,7 +82,7 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
         let normalized = RemotePath.normalize(path)
         do {
             let responses = try await sftp.listDirectory(atPath: normalized)
-            return responses.flatMap(\.components).compactMap { component in
+            let items: [RemoteItem] = responses.flatMap(\.components).compactMap { component in
                 guard component.filename != ".", component.filename != ".." else { return nil }
                 let kind = Self.kind(from: component.attributes.permissions)
                 let size = component.attributes.size.map { Int64(clamping: $0) }
@@ -97,13 +97,59 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
                     permissions: component.attributes.permissions.map { $0 & 0o7777 },
                     revision: .init(modifiedAt: modified, size: size)
                 )
-            }.sorted {
-                if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+            }
+            return try await Self.resolvingLinkTargets(items, sftp: sftp).sorted {
+                if $0.isFolderLike != $1.isFolderLike { return $0.isFolderLike }
                 return $0.name.localizedStandardCompare($1.name) == .orderedAscending
             }
         } catch {
             throw Self.normalizedSFTPError(error, operation: "list \(normalized)")
         }
+    }
+
+    /// READDIR reports links themselves (`/var -> tmp` on OpenWrt shows up as
+    /// a 3-byte file), so STAT each link, which follows it, to learn whether
+    /// it points to a folder. Broken or unreadable links stay unresolved.
+    private static func resolvingLinkTargets(_ items: [RemoteItem], sftp: SFTPClient) async throws -> [RemoteItem] {
+        let links = items.indices.filter { items[$0].kind == .symbolicLink }
+        guard !links.isEmpty else { return items }
+        var resolved = items
+        try await withThrowingTaskGroup(of: (Int, RemoteItemKind?, Int64?).self) { group in
+            // Keep at most `maxInFlightRequests` STATs outstanding.
+            var started = 0
+            var finished = 0
+            while finished < links.count {
+                while started < links.count, started - finished < maxInFlightRequests {
+                    let index = links[started]
+                    let path = items[index].path
+                    group.addTask {
+                        guard let attributes = try? await sftp.getAttributes(at: path) else {
+                            return (index, nil, nil)
+                        }
+                        return (index, Self.kind(from: attributes.permissions), attributes.size.map { Int64(clamping: $0) })
+                    }
+                    started += 1
+                }
+                guard let result = try await group.next() else { break }
+                let (index, target, targetSize) = result
+                finished += 1
+                try Task.checkCancellation()
+                guard let target else { continue }
+                let item = resolved[index]
+                resolved[index] = RemoteItem(
+                    name: item.name,
+                    path: item.path,
+                    kind: item.kind,
+                    size: target == .directory ? nil : targetSize ?? item.size,
+                    modifiedAt: item.modifiedAt,
+                    isHidden: item.isHidden,
+                    permissions: item.permissions,
+                    revision: item.revision,
+                    linkTargetKind: target
+                )
+            }
+        }
+        return resolved
     }
 
     func attributes(path: String) async throws -> RemoteItem {

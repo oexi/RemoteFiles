@@ -213,3 +213,35 @@ final class BrowserUploadConflictTests: XCTestCase {
         XCTAssertTrue(engine.records.isEmpty)
     }
 }
+
+@MainActor
+final class BrowserSymbolicLinkTests: XCTestCase {
+    func testLinkToFolderIsFolderLikeButStaysALink() {
+        let link = RemoteItem(name: "var", path: "/var", kind: .symbolicLink, size: 3, linkTargetKind: .directory)
+        XCTAssertTrue(link.isFolderLike)
+        XCTAssertFalse(link.isDirectory)
+        XCTAssertFalse(RemoteItem(name: "run", path: "/run", kind: .symbolicLink, linkTargetKind: .file).isFolderLike)
+        XCTAssertFalse(RemoteItem(name: "lib64", path: "/lib64", kind: .symbolicLink).isFolderLike)
+        XCTAssertTrue(RemoteItem(name: "tmp", path: "/tmp", kind: .directory).isFolderLike)
+    }
+
+    func testOpeningResolvedFolderLinkEntersWithoutStat() async throws {
+        let storage = MemoryRemoteProvider.Storage()
+        // The server resolves the link path, so listing it shows the target's contents.
+        storage.makeDirectory("/var")
+        storage.write("/var/log.txt", Data("x".utf8))
+        var profile = ConnectionProfile.empty(for: .sftp)
+        profile.initialPath = "/"
+        let provider = MemoryRemoteProvider(profile: profile, storage: storage)
+        let model = BrowserViewModel(profile: profile, makeProvider: { _ in provider })
+        await model.start()
+
+        let link = RemoteItem(name: "var", path: "/var", kind: .symbolicLink, size: 3, linkTargetKind: .directory)
+        let file = await model.openLink(link)
+
+        XCTAssertNil(file)
+        XCTAssertEqual(model.currentPath, "/var")
+        XCTAssertEqual(model.items.map(\.name), ["log.txt"])
+        XCTAssertFalse(storage.operations.contains("stat:/var"))
+    }
+}
