@@ -208,3 +208,5 @@
 "Require Unlock" = "Require Unlock";
 "Security" = "Security";
 "Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock." = "Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock.";
+"Nearby Servers" = "Nearby Servers";
+"Searching the local network…" = "Searching the local network…";

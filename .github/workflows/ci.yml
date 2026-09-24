@@ -118,6 +118,8 @@ jobs:
           test -f "$APP/Assets.car"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles' "$APP/Info.plist" | grep -F 'AppIcon'
           compgen -G "$APP/AppIcon*.png" >/dev/null
+          /usr/libexec/PlistBuddy -c 'Print :NSBonjourServices' "$APP/Info.plist" | grep -F '_smb._tcp'
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
           test -d "$EXT"
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$EXT/Info.plist" | grep -Fx 'com.apple.fileprovider-nonui'
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPrincipalClass' "$EXT/Info.plist" | grep -F 'FileProviderExtension'

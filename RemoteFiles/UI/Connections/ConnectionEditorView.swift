@@ -12,6 +12,10 @@ struct ConnectionEditorView: View {
     @State private var showingDiagnostics = false
     @State private var testing = false
     @State private var testMessage: String?
+    @StateObject private var lanBrowser = LANServiceBrowser()
+    @State private var resolvingServerID: String?
+    /// Nearby servers are only offered while filling in a new connection.
+    private let showsNearbyServers: Bool
 
     let onSave: (ConnectionProfile, Credential) throws -> Void
 
@@ -22,12 +26,17 @@ struct ConnectionEditorView: View {
         _privateKey = State(initialValue: storedCredential?.privateKey)
         _privateKeyName = State(initialValue: storedCredential?.privateKeyName)
         _privateKeyPassphrase = State(initialValue: storedCredential?.privateKeyPassphrase ?? "")
+        showsNearbyServers = profile.host.isEmpty
         self.onSave = onSave
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if showsNearbyServers {
+                    nearbyServersSection
+                }
+
                 Section("Server") {
                     Picker("Protocol", selection: $profile.protocolType) {
                         ForEach(RemoteProtocol.allCases) { value in Text(value.title).tag(value) }
@@ -152,6 +161,10 @@ struct ConnectionEditorView: View {
                     .disabled(profile.name.isEmpty || profile.host.isEmpty)
                 }
             }
+            .task {
+                if showsNearbyServers { lanBrowser.start() }
+            }
+            .onDisappear { lanBrowser.stop() }
             .onChange(of: profile.protocolType) { oldValue, newValue in
                 if profile.port == oldValue.defaultPort { profile.port = newValue.defaultPort }
                 if profile.name == oldValue.title { profile.name = newValue.title }
@@ -261,6 +274,62 @@ struct ConnectionEditorView: View {
         }
         guard parts.query == nil, parts.fragment == nil else {
             throw RemoteProviderError.invalidConfiguration("WebDAV server URL must not contain a query or fragment.")
+        }
+    }
+
+    private var nearbyServersSection: some View {
+        Section {
+            if lanBrowser.servers.isEmpty {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Searching the local network…")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                ForEach(lanBrowser.servers) { server in
+                    Button {
+                        Task { await useNearbyServer(server) }
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: server.protocolType.systemImage)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(server.name)
+                                Text(server.useTLS ? "\(server.protocolType.title) (HTTPS)" : server.protocolType.title)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if resolvingServerID == server.id {
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(resolvingServerID != nil)
+                }
+            }
+        } header: {
+            Text("Nearby Servers")
+        }
+    }
+
+    private func useNearbyServer(_ server: DiscoveredServer) async {
+        resolvingServerID = server.id
+        defer { resolvingServerID = nil }
+        do {
+            let resolved = try await lanBrowser.resolve(server)
+            let previousTitle = profile.protocolType.title
+            profile.protocolType = server.protocolType
+            profile.host = resolved.host
+            profile.port = resolved.port
+            if server.protocolType == .webdav { profile.useTLS = server.useTLS }
+            if profile.name.isEmpty || profile.name == previousTitle {
+                profile.name = server.name
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            testMessage = error.localizedDescription
         }
     }
 

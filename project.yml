@@ -68,9 +68,14 @@ targets:
       - path: RemoteFiles
         excludes:
           - Resources
+          - Info.plist
       - path: RemoteFiles/Resources
     settings:
       base:
+        # Holds only keys that have no INFOPLIST_KEY_ build setting (NSBonjourServices);
+        # Xcode merges it with the generated Info.plist.
+        INFOPLIST_FILE: RemoteFiles/Info.plist
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: RemoteFiles looks for file servers on your local network so you can add them quickly.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         CODE_SIGN_STYLE: Automatic

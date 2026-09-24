@@ -208,3 +208,5 @@
 "Require Unlock" = "需要解锁";
 "Security" = "安全";
 "Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock." = "使用面容 ID、触控 ID 或设备密码。App 锁定时传输会继续进行。“文件”App 不受 App 锁保护。";
+"Nearby Servers" = "附近的服务器";
+"Searching the local network…" = "正在搜索局域网…";
