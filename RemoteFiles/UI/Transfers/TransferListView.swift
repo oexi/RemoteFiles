@@ -99,7 +99,7 @@ struct TransferListView: View {
             .navigationTitle("Transfers")
             .toolbar {
                 Button { engine.clearFinished(using: connections) } label: {
-                    Label("Clear Finished", systemImage: "clear")
+                    Label("Clear Finished", systemImage: "trash")
                 }
                 .labelStyle(.iconOnly)
                 .disabled(!engine.records.contains(where: { $0.state == .completed || $0.state == .cancelled }))
