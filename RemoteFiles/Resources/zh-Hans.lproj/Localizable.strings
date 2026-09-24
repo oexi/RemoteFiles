@@ -210,3 +210,9 @@
 "Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock." = "使用面容 ID、触控 ID 或设备密码。App 锁定时传输会继续进行。“文件”App 不受 App 锁保护。";
 "Nearby Servers" = "附近的服务器";
 "Searching the local network…" = "正在搜索局域网…";
+"Browse Shares" = "浏览共享文件夹";
+"Don't know the share name? Enter the host and account, then tap the list button to pick a shared folder from the server." = "不知道共享名称？填好主机和账户后，点右侧的列表按钮，从服务器的共享文件夹中选择。";
+"Choose a shared folder. Tap the list button next to Share to see the server's shares." = "请选择一个共享文件夹。点“共享”旁的列表按钮可查看服务器上的共享。";
+"No Shared Folders" = "没有共享文件夹";
+"The server did not report any shared folders this account can open." = "服务器没有返回此账户可打开的共享文件夹。";
+"Shared Folders" = "共享文件夹";

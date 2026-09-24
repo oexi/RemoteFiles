@@ -14,6 +14,11 @@ struct ConnectionEditorView: View {
     @State private var testMessage: String?
     @StateObject private var lanBrowser = LANServiceBrowser()
     @State private var resolvingServerID: String?
+    /// The name last filled in from a nearby server, so picking another server
+    /// replaces it while a name the user typed is kept.
+    @State private var autoFilledName: String?
+    @State private var loadingShares = false
+    @State private var shareChoices: [SMBShareInfo]?
     /// Nearby servers are only offered while filling in a new connection.
     private let showsNearbyServers: Bool
 
@@ -81,9 +86,29 @@ struct ConnectionEditorView: View {
                 }
 
                 if profile.protocolType == .smb {
-                    Section("SMB") {
-                        TextField("Share", text: $profile.share)
+                    Section {
+                        HStack {
+                            TextField("Share", text: $profile.share)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            Button {
+                                Task { await browseShares() }
+                            } label: {
+                                if loadingShares {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "list.bullet")
+                                }
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(profile.host.isEmpty || loadingShares)
+                            .accessibilityLabel("Browse Shares")
+                        }
                         TextField("Domain (optional)", text: $profile.domain)
+                    } header: {
+                        Text("SMB")
+                    } footer: {
+                        Text("Don't know the share name? Enter the host and account, then tap the list button to pick a shared folder from the server.")
                     }
                 }
 
@@ -165,6 +190,15 @@ struct ConnectionEditorView: View {
                 if showsNearbyServers { lanBrowser.start() }
             }
             .onDisappear { lanBrowser.stop() }
+            .sheet(isPresented: Binding(
+                get: { shareChoices != nil },
+                set: { if !$0 { shareChoices = nil } }
+            )) {
+                SMBSharePicker(shares: shareChoices ?? []) { share in
+                    profile.share = share.name
+                    shareChoices = nil
+                }
+            }
             .onChange(of: profile.protocolType) { oldValue, newValue in
                 if profile.port == oldValue.defaultPort { profile.port = newValue.defaultPort }
                 if profile.name == oldValue.title { profile.name = newValue.title }
@@ -251,6 +285,11 @@ struct ConnectionEditorView: View {
     }
 
     private func validateForSave() throws {
+        if profile.protocolType == .smb, profile.share.trimmingCharacters(in: .whitespaces).isEmpty {
+            throw RemoteProviderError.invalidConfiguration(
+                String(localized: "Choose a shared folder. Tap the list button next to Share to see the server's shares.")
+            )
+        }
         guard profile.protocolType == .webdav else { return }
         let input = profile.host.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawBase: String
@@ -313,18 +352,44 @@ struct ConnectionEditorView: View {
         }
     }
 
+    private func browseShares() async {
+        loadingShares = true
+        defer { loadingShares = false }
+        do {
+            shareChoices = try await SMBProvider.listShares(
+                host: profile.host.trimmingCharacters(in: .whitespacesAndNewlines),
+                port: profile.port,
+                username: profile.username,
+                password: password,
+                domain: profile.domain
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            testMessage = error.localizedDescription
+        }
+    }
+
     private func useNearbyServer(_ server: DiscoveredServer) async {
         resolvingServerID = server.id
         defer { resolvingServerID = nil }
         do {
             let resolved = try await lanBrowser.resolve(server)
             let previousTitle = profile.protocolType.title
+            let nameWasAutomatic = profile.name.isEmpty
+                || profile.name == previousTitle
+                || profile.name == autoFilledName
+            if resolved.host != profile.host {
+                // A share name belongs to the previous server.
+                profile.share = ""
+            }
             profile.protocolType = server.protocolType
             profile.host = resolved.host
             profile.port = resolved.port
             if server.protocolType == .webdav { profile.useTLS = server.useTLS }
-            if profile.name.isEmpty || profile.name == previousTitle {
+            if nameWasAutomatic {
                 profile.name = server.name
+                autoFilledName = server.name
             }
         } catch is CancellationError {
             return
@@ -355,3 +420,50 @@ struct ConnectionEditorView: View {
     }
 }
 
+
+private struct SMBSharePicker: View {
+    @Environment(\.dismiss) private var dismiss
+    let shares: [SMBShareInfo]
+    let onPick: (SMBShareInfo) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if shares.isEmpty {
+                    ContentUnavailableView(
+                        "No Shared Folders",
+                        systemImage: "externaldrive.badge.xmark",
+                        description: Text("The server did not report any shared folders this account can open.")
+                    )
+                } else {
+                    List(shares) { share in
+                        Button {
+                            onPick(share)
+                        } label: {
+                            HStack(spacing: 10) {
+                                WhiteSurFileIconView(fileName: share.name, isDirectory: true, size: 30)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(share.name)
+                                    if !share.comment.isEmpty {
+                                        Text(share.comment)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle("Shared Folders")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}

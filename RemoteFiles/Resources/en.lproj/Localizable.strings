@@ -210,3 +210,9 @@
 "Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock." = "Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock.";
 "Nearby Servers" = "Nearby Servers";
 "Searching the local network…" = "Searching the local network…";
+"Browse Shares" = "Browse Shares";
+"Don't know the share name? Enter the host and account, then tap the list button to pick a shared folder from the server." = "Don't know the share name? Enter the host and account, then tap the list button to pick a shared folder from the server.";
+"Choose a shared folder. Tap the list button next to Share to see the server's shares." = "Choose a shared folder. Tap the list button next to Share to see the server's shares.";
+"No Shared Folders" = "No Shared Folders";
+"The server did not report any shared folders this account can open." = "The server did not report any shared folders this account can open.";
+"Shared Folders" = "Shared Folders";
