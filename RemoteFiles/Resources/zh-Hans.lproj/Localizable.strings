@@ -158,3 +158,16 @@
 "Transfer complete" = "传输完成";
 "Transfer failed" = "传输失败";
 "Import SSH Private Key" = "导入 SSH 私钥";
+"Archive" = "压缩包";
+"Archive extracted successfully." = "压缩包已解压。";
+"Search archive" = "搜索压缩包";
+"Folders" = "文件夹";
+"Uncompressed Size" = "解压后大小";
+"Archive Size" = "压缩包大小";
+"Compression Ratio" = "压缩率";
+"%lld file(s) · %@" = "%lld 个文件 · %@";
+"Extract Archive" = "解压压缩包";
+"Extract to “%@”" = "解压到“%@”";
+"Extract into Current Folder" = "直接解压到当前文件夹";
+"This archive has several items at its top level. Extract them into a new folder?" = "此压缩包顶层包含多个项目，是否解压到新文件夹？";
+"Extracted to “%@”." = "已解压到“%@”。";

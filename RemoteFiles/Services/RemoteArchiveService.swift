@@ -1,7 +1,15 @@
 import Foundation
 
 enum RemoteArchiveService {
-    static func extractHere(item: RemoteItem, provider: any RemoteFileProvider) async throws {
+    /// Extracts `item` next to itself and returns the remote folder that received the files.
+    /// With `intoFolder`, a new folder named after the archive is created first; when that name
+    /// is taken, a numbered name ("name 2", "name 3", …) is used instead of merging.
+    @discardableResult
+    static func extractHere(
+        item: RemoteItem,
+        provider: any RemoteFileProvider,
+        intoFolder: Bool = false
+    ) async throws -> String {
         let archiveURL = try await CacheManager.shared.materialize(provider: provider, item: item, forceRefresh: true)
         guard ArchiveManager.canOpen(fileName: item.name) else {
             throw RemoteProviderError.unsupported("This archive format is not supported.")
@@ -11,7 +19,7 @@ enum RemoteArchiveService {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
         try ArchiveManager.extract(archiveURL, originalName: item.name, to: tempRoot)
 
-        let destinationRoot = RemotePath.parent(item.path)
+        var destinationRoot = RemotePath.parent(item.path)
         let (directories, files) = try extractedItems(under: tempRoot)
         let plan = try extractionPlan(directories: directories, files: files, under: tempRoot)
 
@@ -20,6 +28,22 @@ enum RemoteArchiveService {
         }
         guard provider.capabilities.contains(.write) else {
             throw RemoteProviderError.unsupported("This provider does not support writing extracted files.")
+        }
+        if intoFolder {
+            guard provider.capabilities.contains(.createDirectory) else {
+                throw RemoteProviderError.unsupported("This provider does not support creating extracted folders.")
+            }
+            let parent = destinationRoot
+            let takenNames = Set(try await provider.list(path: parent).map { $0.name.lowercased() })
+            let baseName = ArchiveManager.suggestedFolderName(for: item.name)
+            var folderName = baseName
+            var suffix = 2
+            while takenNames.contains(folderName.lowercased()) {
+                folderName = "\(baseName) \(suffix)"
+                suffix += 1
+            }
+            destinationRoot = RemotePath.join(parent, folderName)
+            try await provider.createDirectory(path: destinationRoot)
         }
 
         // A remote provider has no transaction primitive. Preflight every existing
@@ -51,6 +75,7 @@ enum RemoteArchiveService {
                 overwrite: false
             )
         }
+        return destinationRoot
     }
 
     private struct ExtractionEntry {

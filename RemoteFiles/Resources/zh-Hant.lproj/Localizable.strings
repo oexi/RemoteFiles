@@ -158,3 +158,16 @@
 "Transfer complete" = "傳輸完成";
 "Transfer failed" = "傳輸失敗";
 "Import SSH Private Key" = "匯入 SSH 私鑰";
+"Archive" = "壓縮檔";
+"Archive extracted successfully." = "壓縮檔已解壓縮。";
+"Search archive" = "搜尋壓縮檔";
+"Folders" = "資料夾";
+"Uncompressed Size" = "解壓縮後大小";
+"Archive Size" = "壓縮檔大小";
+"Compression Ratio" = "壓縮率";
+"%lld file(s) · %@" = "%lld 個檔案 · %@";
+"Extract Archive" = "解壓縮壓縮檔";
+"Extract to “%@”" = "解壓縮到「%@」";
+"Extract into Current Folder" = "直接解壓縮到目前資料夾";
+"This archive has several items at its top level. Extract them into a new folder?" = "此壓縮檔頂層包含多個項目，是否解壓縮到新資料夾？";
+"Extracted to “%@”." = "已解壓縮到「%@」。";

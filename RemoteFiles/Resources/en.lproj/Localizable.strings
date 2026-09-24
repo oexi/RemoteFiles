@@ -158,3 +158,16 @@
 "Transfer complete" = "Transfer complete";
 "Transfer failed" = "Transfer failed";
 "Import SSH Private Key" = "Import SSH Private Key";
+"Archive" = "Archive";
+"Archive extracted successfully." = "Archive extracted successfully.";
+"Search archive" = "Search archive";
+"Folders" = "Folders";
+"Uncompressed Size" = "Uncompressed Size";
+"Archive Size" = "Archive Size";
+"Compression Ratio" = "Compression Ratio";
+"%lld file(s) · %@" = "%lld file(s) · %@";
+"Extract Archive" = "Extract Archive";
+"Extract to “%@”" = "Extract to “%@”";
+"Extract into Current Folder" = "Extract into Current Folder";
+"This archive has several items at its top level. Extract them into a new folder?" = "This archive has several items at its top level. Extract them into a new folder?";
+"Extracted to “%@”." = "Extracted to “%@”.";

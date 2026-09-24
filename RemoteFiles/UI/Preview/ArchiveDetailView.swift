@@ -4,33 +4,21 @@ struct ArchiveDetailView: View {
     let provider: any RemoteFileProvider
     let item: RemoteItem
 
-    @State private var entries: [ArchiveEntryInfo] = []
+    @State private var nodes: [ArchiveTreeNode] = []
+    @State private var archiveURL: URL?
     @State private var loading = true
     @State private var extracting = false
+    @State private var showingExtractChoice = false
     @State private var message: String?
 
     var body: some View {
         Group {
             if loading {
                 ProgressView("Reading archive…")
+            } else if let archiveURL {
+                ArchiveTreeView(nodes: nodes, archiveURL: archiveURL, archiveName: item.name)
             } else {
-                List(entries) { entry in
-                    HStack {
-                        WhiteSurFileIconView(
-                            fileName: (entry.path as NSString).lastPathComponent,
-                            isDirectory: entry.kind == .directory,
-                            size: 30
-                        )
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(entry.path)
-                            if entry.kind == .file {
-                                Text(ByteCountFormatter.string(fromByteCount: Int64(entry.uncompressedSize), countStyle: .file))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
+                ContentUnavailableView("Preview unavailable", systemImage: "exclamationmark.triangle")
             }
         }
         .navigationTitle(item.name)
@@ -38,10 +26,30 @@ struct ArchiveDetailView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button(extractionActionTitle) {
-                    Task { await extract() }
+                    // Several top-level items would scatter into the current folder, so ask first.
+                    if nodes.count > 1 {
+                        showingExtractChoice = true
+                    } else {
+                        Task { await extract(intoFolder: false) }
+                    }
                 }
-                .disabled(extracting || loading)
+                .disabled(extracting || loading || archiveURL == nil)
             }
+        }
+        .confirmationDialog(
+            "Extract Archive",
+            isPresented: $showingExtractChoice,
+            titleVisibility: .visible
+        ) {
+            Button("Extract to “\(ArchiveManager.suggestedFolderName(for: item.name))”") {
+                Task { await extract(intoFolder: true) }
+            }
+            Button("Extract into Current Folder") {
+                Task { await extract(intoFolder: false) }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This archive has several items at its top level. Extract them into a new folder?")
         }
         .task { await load() }
         .alert("Archive", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
@@ -56,19 +64,33 @@ struct ArchiveDetailView: View {
     private func load() async {
         do {
             let localURL = try await CacheManager.shared.materialize(provider: provider, item: item)
-            entries = try ArchiveManager.list(localURL, originalName: item.name)
+            let name = item.name
+            nodes = try await Task.detached(priority: .userInitiated) {
+                try ArchiveTree.build(from: ArchiveManager.list(localURL, originalName: name))
+            }.value
+            archiveURL = localURL
         } catch {
             message = error.localizedDescription
         }
         loading = false
     }
 
-    private func extract() async {
+    private func extract(intoFolder: Bool) async {
         extracting = true
         defer { extracting = false }
         do {
-            try await RemoteArchiveService.extractHere(item: item, provider: provider)
-            message = "Archive extracted successfully."
+            let destination = try await RemoteArchiveService.extractHere(
+                item: item,
+                provider: provider,
+                intoFolder: intoFolder
+            )
+            if intoFolder {
+                message = String(
+                    localized: "Extracted to “\((destination as NSString).lastPathComponent)”."
+                )
+            } else {
+                message = String(localized: "Archive extracted successfully.")
+            }
         } catch {
             message = error.localizedDescription
         }

@@ -242,7 +242,7 @@ private struct OfflineArchiveContentView: View {
     @Binding var message: String?
     @Binding var working: Bool
 
-    @State private var entries: [ArchiveEntryInfo] = []
+    @State private var nodes: [ArchiveTreeNode] = []
     @State private var loading = true
 
     var body: some View {
@@ -250,23 +250,11 @@ private struct OfflineArchiveContentView: View {
             if loading {
                 ProgressView("Reading archive…")
             } else {
-                List(entries) { entry in
-                    HStack {
-                        WhiteSurFileIconView(
-                            fileName: (entry.path as NSString).lastPathComponent,
-                            isDirectory: entry.kind == .directory,
-                            size: 30
-                        )
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(entry.path)
-                            if entry.kind == .file {
-                                Text(ByteCountFormatter.string(fromByteCount: Int64(entry.uncompressedSize), countStyle: .file))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
+                ArchiveTreeView(
+                    nodes: nodes,
+                    archiveURL: offline.localURL(for: item),
+                    archiveName: item.fileName
+                )
             }
         }
         .toolbar {
@@ -288,8 +276,8 @@ private struct OfflineArchiveContentView: View {
         do {
             let url = offline.localURL(for: item)
             let name = item.fileName
-            entries = try await Task.detached(priority: .userInitiated) {
-                try ArchiveManager.list(url, originalName: name)
+            nodes = try await Task.detached(priority: .userInitiated) {
+                try ArchiveTree.build(from: ArchiveManager.list(url, originalName: name))
             }.value
         } catch {
             message = error.localizedDescription
