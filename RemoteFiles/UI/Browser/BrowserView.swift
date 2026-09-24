@@ -103,6 +103,7 @@ struct BrowserView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if selectionMode { selectionBar }
         }
+        .background { keyboardShortcuts }
         .onChange(of: searchText) { _, _ in displayLimit = 200 }
         .onChange(of: model.items) { _, items in
             selectedPaths.formIntersection(Set(items.map(\.path)))
@@ -124,6 +125,49 @@ struct BrowserView: View {
             let name = path == "/" ? model.profile.name : (path as NSString).lastPathComponent
             history.toggleFavorite(profileID: model.profile.id, path: path, name: name, isDirectory: true)
         }
+    }
+
+    /// Invisible buttons that carry the iPad hardware keyboard shortcuts.
+    /// Copy, cut, paste and delete stay off while the search field has focus
+    /// so text editing keeps its usual shortcuts.
+    private var keyboardShortcuts: some View {
+        let canEditSelection = selectionMode && !selectedPaths.isEmpty && !searchFocused
+        return Group {
+            Button("Refresh") { Task { await model.refresh() } }
+                .keyboardShortcut("r")
+            Button("New Folder") { showingFolderPrompt = true }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!model.capabilities.contains(.createDirectory))
+            Button("Search") { searchFocused = true }
+                .keyboardShortcut("f")
+            Button("Enclosing Folder") { Task { await model.goUp() } }
+                .keyboardShortcut(.upArrow)
+                .disabled(!model.canGoUp)
+            Button("Copy") { placeSelectedOnClipboard(.copy) }
+                .keyboardShortcut("c")
+                .disabled(!canEditSelection)
+            Button("Cut") { placeSelectedOnClipboard(.move) }
+                .keyboardShortcut("x")
+                .disabled(
+                    !canEditSelection ||
+                    (!model.capabilities.contains(.move) && !model.capabilities.contains(.delete))
+                )
+            Button("Paste") {
+                Task { await model.paste(clipboard, using: connections, transfers: transfers) }
+            }
+            .keyboardShortcut("v")
+            .disabled(searchFocused || clipboard.isEmpty || !model.capabilities.contains(.write))
+            Button("Delete Selected") { showingBatchDeleteConfirmation = true }
+                .keyboardShortcut(.delete)
+                .disabled(!canEditSelection || !model.capabilities.contains(.delete))
+            Button("Show as List") { layout = .list }
+                .keyboardShortcut("1")
+            Button("Show as Grid") { layout = .grid }
+                .keyboardShortcut("2")
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
     }
 
     @ViewBuilder
