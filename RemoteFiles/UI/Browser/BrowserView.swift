@@ -6,6 +6,7 @@ struct BrowserView: View {
     @EnvironmentObject private var transfers: TransferEngine
     @EnvironmentObject private var offline: OfflineStore
     @EnvironmentObject private var clipboard: FileOperationClipboard
+    @EnvironmentObject private var history: LocationHistoryStore
 
     private enum ImportSelection {
         case files
@@ -44,8 +45,8 @@ struct BrowserView: View {
     @AppStorage(AppPreferenceKey.browserFoldersFirst) private var foldersFirst = true
     @AppStorage(AppPreferenceKey.browserLayout) private var layout: BrowserLayout = .list
 
-    init(profile: ConnectionProfile) {
-        _model = StateObject(wrappedValue: BrowserViewModel(profile: profile))
+    init(profile: ConnectionProfile, startPath: String? = nil) {
+        _model = StateObject(wrappedValue: BrowserViewModel(profile: profile, startPath: startPath))
     }
 
     private var browserBase: some View {
@@ -72,6 +73,7 @@ struct BrowserView: View {
                     Menu {
                         viewOptionsMenuContent
                         Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
+                        currentFolderFavoriteButton
                         if !clipboard.isEmpty, model.capabilities.contains(.write) {
                             Button(
                                 "Paste \(clipboard.items.count == 1 ? clipboard.items[0].name : "\(clipboard.items.count) Items")",
@@ -110,6 +112,18 @@ struct BrowserView: View {
             endSelection()
         }
         .task { await model.start() }
+    }
+
+    private var currentFolderFavoriteButton: some View {
+        let isFavorite = history.isFavorite(profileID: model.profile.id, path: model.currentPath)
+        return Button(
+            isFavorite ? "Remove Folder from Favorites" : "Add Folder to Favorites",
+            systemImage: isFavorite ? "star.slash" : "star"
+        ) {
+            let path = model.currentPath
+            let name = path == "/" ? model.profile.name : (path as NSString).lastPathComponent
+            history.toggleFavorite(profileID: model.profile.id, path: path, name: name, isDirectory: true)
+        }
     }
 
     @ViewBuilder
@@ -563,6 +577,19 @@ struct BrowserView: View {
         Button("Properties", systemImage: "info.circle") {
             propertiesItem = item
             searchFocused = false
+        }
+
+        let isFavorite = history.isFavorite(profileID: model.profile.id, path: item.path)
+        Button(
+            isFavorite ? "Remove from Favorites" : "Add to Favorites",
+            systemImage: isFavorite ? "star.slash" : "star"
+        ) {
+            history.toggleFavorite(
+                profileID: model.profile.id,
+                path: item.path,
+                name: item.name,
+                isDirectory: item.isFolderLike
+            )
         }
 
         if let provider = model.provider {

@@ -33,11 +33,12 @@ final class BrowserViewModel: ObservableObject {
 
     init(
         profile: ConnectionProfile,
+        startPath: String? = nil,
         makeProvider: @escaping (ConnectionProfile) throws -> any RemoteFileProvider = { try ProviderFactory.make(for: $0) }
     ) {
         self.profile = profile
         self.makeProvider = makeProvider
-        currentPath = RemotePath.normalize(profile.initialPath)
+        currentPath = RemotePath.normalize(startPath ?? profile.initialPath)
     }
 
     var capabilities: ProviderCapabilities { provider?.capabilities ?? .readOnly }

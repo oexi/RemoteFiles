@@ -178,3 +178,14 @@
 "Grid" = "网格";
 "Sort By" = "排序方式";
 "Folders First" = "文件夹优先";
+"Servers" = "服务器";
+"Favorites" = "收藏";
+"Recent" = "最近";
+"Clear" = "清除";
+"Unable to Open" = "无法打开";
+"Connecting…" = "正在连接…";
+"This file no longer exists on the server." = "服务器上已不存在此文件。";
+"Add to Favorites" = "加入收藏";
+"Remove from Favorites" = "取消收藏";
+"Add Folder to Favorites" = "收藏此文件夹";
+"Remove Folder from Favorites" = "取消收藏此文件夹";

@@ -178,3 +178,14 @@
 "Grid" = "網格";
 "Sort By" = "排序方式";
 "Folders First" = "資料夾優先";
+"Servers" = "伺服器";
+"Favorites" = "收藏";
+"Recent" = "最近";
+"Clear" = "清除";
+"Unable to Open" = "無法開啟";
+"Connecting…" = "正在連線…";
+"This file no longer exists on the server." = "伺服器上已不存在此檔案。";
+"Add to Favorites" = "加入收藏";
+"Remove from Favorites" = "取消收藏";
+"Add Folder to Favorites" = "收藏此資料夾";
+"Remove Folder from Favorites" = "取消收藏此資料夾";

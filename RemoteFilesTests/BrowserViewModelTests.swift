@@ -31,6 +31,15 @@ final class BrowserViewModelTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
     }
 
+    func testStartPathOverridesInitialPath() async throws {
+        let provider = GatedListProvider()
+        let model = BrowserViewModel(profile: rootProfile(), startPath: "/fast/", makeProvider: { _ in provider })
+        XCTAssertEqual(model.currentPath, "/fast")
+
+        await model.start()
+        XCTAssertEqual(model.items.map(\.path), ["/fast/file.txt"])
+    }
+
     func testSupersededListingFailureIsNotReported() async throws {
         let provider = GatedListProvider()
         let model = BrowserViewModel(profile: rootProfile(), makeProvider: { _ in provider })
