@@ -331,6 +331,32 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         return client
     }
 
+    /// Logs in without a share and lists the disk shares a user can open, so the
+    /// share name does not have to be known in advance.
+    static func listShares(
+        host: String,
+        port: Int,
+        username: String,
+        password: String?,
+        domain: String?
+    ) async throws -> [SMBShareInfo] {
+        let client = SMBClient(host: host, port: port)
+        defer { client.session.disconnect() }
+        _ = try await client.login(
+            username: username,
+            password: password,
+            domain: domain?.isEmpty == false ? domain : nil
+        )
+        let shares = try await client.listShares().map {
+            SMBShareInfo(
+                name: $0.name.trimmingCharacters(in: CharacterSet(charactersIn: "\0")),
+                comment: $0.comment.trimmingCharacters(in: CharacterSet(charactersIn: "\0")),
+                rawType: $0.type.rawValue
+            )
+        }
+        return SMBShareInfo.browsable(shares)
+    }
+
     private func invalidate(_ client: SMBClient) {
         let retired = stateLock.withLock {
             guard activeClient === client else { return false }
@@ -387,5 +413,25 @@ private final class SMBReadSession: RemoteChunkReadSession, @unchecked Sendable 
         guard !isClosed else { return }
         isClosed = true
         try? await reader.close()
+    }
+}
+
+struct SMBShareInfo: Identifiable, Hashable, Sendable {
+    var id: String { name }
+    let name: String
+    let comment: String
+    /// The SHARE_INFO_1 `shi1_type` value.
+    let rawType: UInt32
+
+    /// The base type sits in the low bits (STYPE_DISKTREE = 0, printer = 1, device = 2,
+    /// IPC = 3); higher bits are flags such as STYPE_CLUSTER_FS that a disk share may carry.
+    var isDiskShare: Bool { rawType & 0xFF == 0 }
+    /// STYPE_SPECIAL marks administrative shares such as C$ and ADMIN$.
+    var isSpecial: Bool { rawType & 0x8000_0000 != 0 || name.hasSuffix("$") }
+
+    static func browsable(_ shares: [SMBShareInfo]) -> [SMBShareInfo] {
+        shares
+            .filter { $0.isDiskShare && !$0.isSpecial }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }
