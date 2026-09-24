@@ -171,3 +171,10 @@
 "Extract into Current Folder" = "直接解壓縮到目前資料夾";
 "This archive has several items at its top level. Extract them into a new folder?" = "此壓縮檔頂層包含多個項目，是否解壓縮到新資料夾？";
 "Extracted to “%@”." = "已解壓縮到「%@」。";
+"Date Modified" = "修改日期";
+"Kind" = "類型";
+"View" = "顯示方式";
+"List" = "列表";
+"Grid" = "網格";
+"Sort By" = "排序方式";
+"Folders First" = "資料夾優先";

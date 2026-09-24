@@ -171,3 +171,10 @@
 "Extract into Current Folder" = "Extract into Current Folder";
 "This archive has several items at its top level. Extract them into a new folder?" = "This archive has several items at its top level. Extract them into a new folder?";
 "Extracted to “%@”." = "Extracted to “%@”.";
+"Date Modified" = "Date Modified";
+"Kind" = "Kind";
+"View" = "View";
+"List" = "List";
+"Grid" = "Grid";
+"Sort By" = "Sort By";
+"Folders First" = "Folders First";

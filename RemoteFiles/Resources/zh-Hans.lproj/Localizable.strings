@@ -171,3 +171,10 @@
 "Extract into Current Folder" = "直接解压到当前文件夹";
 "This archive has several items at its top level. Extract them into a new folder?" = "此压缩包顶层包含多个项目，是否解压到新文件夹？";
 "Extracted to “%@”." = "已解压到“%@”。";
+"Date Modified" = "修改日期";
+"Kind" = "类型";
+"View" = "显示方式";
+"List" = "列表";
+"Grid" = "网格";
+"Sort By" = "排序方式";
+"Folders First" = "文件夹优先";

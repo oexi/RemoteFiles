@@ -39,6 +39,10 @@ struct BrowserView: View {
     @State private var offlineWorkingPath: String?
     @State private var linkedFile: RemoteItem?
     @FocusState private var searchFocused: Bool
+    @AppStorage(AppPreferenceKey.browserSortKey) private var sortKey: BrowserSortKey = .name
+    @AppStorage(AppPreferenceKey.browserSortAscending) private var sortAscending = true
+    @AppStorage(AppPreferenceKey.browserFoldersFirst) private var foldersFirst = true
+    @AppStorage(AppPreferenceKey.browserLayout) private var layout: BrowserLayout = .list
 
     init(profile: ConnectionProfile) {
         _model = StateObject(wrappedValue: BrowserViewModel(profile: profile))
@@ -66,6 +70,7 @@ struct BrowserView: View {
                         .accessibilityLabel("Select Items")
                     }
                     Menu {
+                        viewOptionsMenuContent
                         Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                         if !clipboard.isEmpty, model.capabilities.contains(.write) {
                             Button(
@@ -105,6 +110,38 @@ struct BrowserView: View {
             endSelection()
         }
         .task { await model.start() }
+    }
+
+    @ViewBuilder
+    private var viewOptionsMenuContent: some View {
+        Section {
+            Picker("View", selection: $layout) {
+                Label("List", systemImage: "list.bullet").tag(BrowserLayout.list)
+                Label("Grid", systemImage: "square.grid.2x2").tag(BrowserLayout.grid)
+            }
+            Menu {
+                ForEach(BrowserSortKey.allCases) { key in
+                    Button {
+                        if key == sortKey {
+                            sortAscending.toggle()
+                        } else {
+                            sortKey = key
+                            sortAscending = key.defaultAscending
+                        }
+                    } label: {
+                        if key == sortKey {
+                            Label(key.title, systemImage: sortAscending ? "chevron.up" : "chevron.down")
+                        } else {
+                            Text(key.title)
+                        }
+                    }
+                }
+                Divider()
+                Toggle("Folders First", isOn: $foldersFirst)
+            } label: {
+                Label("Sort By", systemImage: "arrow.up.arrow.down")
+            }
+        }
     }
 
     private var browserWithPrompts: some View {
@@ -295,6 +332,8 @@ struct BrowserView: View {
     private var fileList: some View {
         if model.items.isEmpty {
             emptyFolderArea
+        } else if layout == .grid {
+            populatedFileGrid
         } else {
             populatedFileList
         }
@@ -324,8 +363,9 @@ struct BrowserView: View {
     }
 
     private var populatedFileList: some View {
-        List {
-            ForEach(visibleItems) { item in
+        let items = filteredItems
+        return List {
+            ForEach(items.prefix(displayLimit)) { item in
                 if selectionMode {
                     Button { toggleSelection(item) } label: {
                         HStack(spacing: 10) {
@@ -380,20 +420,63 @@ struct BrowserView: View {
                         }
                 }
             }
-            if filteredItems.count > displayLimit {
-                Button {
-                    displayLimit += 200
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text("Load \(min(200, filteredItems.count - displayLimit)) more")
-                        Spacer()
-                    }
-                }
+            if items.count > displayLimit {
+                loadMoreButton(total: items.count)
             }
         }
         .refreshable { await model.refresh() }
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    private var populatedFileGrid: some View {
+        let items = filteredItems
+        return ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 150), spacing: 8)], spacing: 8) {
+                ForEach(items.prefix(displayLimit)) { item in
+                    gridCell(item)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            if items.count > displayLimit {
+                loadMoreButton(total: items.count)
+                    .padding()
+            }
+        }
+        .refreshable { await model.refresh() }
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    @ViewBuilder
+    private func gridCell(_ item: RemoteItem) -> some View {
+        if selectionMode {
+            Button { toggleSelection(item) } label: {
+                BrowserGridCell(
+                    item: item,
+                    provider: model.provider,
+                    selected: selectedPaths.contains(item.path)
+                )
+            }
+            .buttonStyle(.plain)
+        } else {
+            itemActivator(item) {
+                BrowserGridCell(item: item, provider: model.provider)
+            }
+            .buttonStyle(.plain)
+            .contextMenu { itemContextMenu(item) }
+        }
+    }
+
+    private func loadMoreButton(total: Int) -> some View {
+        Button {
+            displayLimit += 200
+        } label: {
+            HStack {
+                Spacer()
+                Text("Load \(min(200, total - displayLimit)) more")
+                Spacer()
+            }
+        }
     }
 
     private var selectionBar: some View {
@@ -541,14 +624,16 @@ struct BrowserView: View {
         }
     }
 
-    private var filteredItems: [RemoteItem] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return model.items }
-        return model.items.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    private var sortOrder: BrowserSortOrder {
+        BrowserSortOrder(key: sortKey, ascending: sortAscending, foldersFirst: foldersFirst)
     }
 
-    private var visibleItems: ArraySlice<RemoteItem> {
-        filteredItems.prefix(displayLimit)
+    private var filteredItems: [RemoteItem] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matching = query.isEmpty
+            ? model.items
+            : model.items.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        return sortOrder.sorted(matching)
     }
 
     private func deleteConfirmationMessage(for item: RemoteItem) -> LocalizedStringKey {
@@ -561,46 +646,38 @@ struct BrowserView: View {
         return "This permanently deletes “\(item.name)”."
     }
 
-    @ViewBuilder
     private func itemRow(_ item: RemoteItem) -> some View {
+        itemActivator(item) {
+            FileRow(
+                item: item,
+                provider: model.provider,
+                displaySize: item.isFolderLike ? nil : item.size
+            )
+        }
+    }
+
+    /// Wraps `label` in what tapping an item does: enter a folder, follow a link or open a file.
+    @ViewBuilder
+    private func itemActivator<Content: View>(
+        _ item: RemoteItem,
+        @ViewBuilder label: () -> Content
+    ) -> some View {
         if item.isDirectory {
-            Button { Task { await model.enter(item) } } label: {
-                FileRow(
-                    item: item,
-                    provider: model.provider,
-                    displaySize: nil
-                )
-            }
+            Button { Task { await model.enter(item) } } label: { label() }
                 .buttonStyle(.plain)
         } else if item.kind == .symbolicLink {
             Button {
                 Task {
                     if let file = await model.openLink(item) { linkedFile = file }
                 }
-            } label: {
-                FileRow(
-                    item: item,
-                    provider: model.provider,
-                    displaySize: item.size
-                )
-            }
+            } label: { label() }
             .buttonStyle(.plain)
         } else if let provider = model.provider {
             NavigationLink {
                 FileDetailView(provider: provider, item: item)
-            } label: {
-                FileRow(
-                    item: item,
-                    provider: provider,
-                    displaySize: item.size
-                )
-            }
+            } label: { label() }
         } else {
-            FileRow(
-                item: item,
-                provider: nil,
-                displaySize: item.isDirectory ? nil : item.size
-            )
+            label()
         }
     }
 }
@@ -665,7 +742,8 @@ private struct FileRow: View {
             thumbnail = await ThumbnailStore.shared.thumbnail(
                 provider: provider,
                 item: item,
-                size: CGSize(width: 72, height: 72)
+                // Matches BrowserGridCell: the thumbnail cache is keyed without size.
+                size: CGSize(width: 84, height: 84)
             )
         }
     }

@@ -54,4 +54,8 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 enum AppPreferenceKey {
     static let appearance = "RemoteFiles.Appearance"
     static let language = "RemoteFiles.Language"
+    static let browserSortKey = "RemoteFiles.Browser.SortKey"
+    static let browserSortAscending = "RemoteFiles.Browser.SortAscending"
+    static let browserFoldersFirst = "RemoteFiles.Browser.FoldersFirst"
+    static let browserLayout = "RemoteFiles.Browser.Layout"
 }
