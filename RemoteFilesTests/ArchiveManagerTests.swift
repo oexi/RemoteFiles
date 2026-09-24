@@ -174,6 +174,84 @@ final class ArchiveManagerTests: XCTestCase {
         }
     }
 
+    func testExtractEntryFromTarWritesOnlySelectedFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesTarEntryTest-\(UUID().uuidString)", isDirectory: true)
+        let archive = root.appendingPathComponent("sample.tar")
+        let destination = root.appendingPathComponent("preview", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try writeTarArchive(
+            entries: [
+                ("folder/first.txt", Data("first".utf8)),
+                ("folder/second.txt", Data("second".utf8))
+            ],
+            to: archive
+        )
+
+        let extracted = try ArchiveManager.extractEntry(
+            "folder/second.txt",
+            from: archive,
+            originalName: "sample.tar",
+            to: destination
+        )
+
+        XCTAssertEqual(extracted, destination.appendingPathComponent("folder/second.txt"))
+        XCTAssertEqual(try String(contentsOf: extracted, encoding: .utf8), "second")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: destination.appendingPathComponent("folder/first.txt").path
+        ))
+    }
+
+    func testExtractEntryFromZip() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesZipEntryTest-\(UUID().uuidString)", isDirectory: true)
+        let source = root.appendingPathComponent("note.txt")
+        let archive = root.appendingPathComponent("note.zip")
+        let destination = root.appendingPathComponent("preview", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("zip entry".utf8).write(to: source)
+        try ArchiveManager.createZIP(from: source, at: archive)
+
+        let extracted = try ArchiveManager.extractEntry(
+            "note.txt",
+            from: archive,
+            originalName: "note.zip",
+            to: destination
+        )
+
+        XCTAssertEqual(try String(contentsOf: extracted, encoding: .utf8), "zip entry")
+    }
+
+    func testExtractEntryRejectsMissingTarEntry() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesTarMissingEntryTest-\(UUID().uuidString)", isDirectory: true)
+        let archive = root.appendingPathComponent("sample.tar")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try writeTarArchive(entries: [("a.txt", Data("a".utf8))], to: archive)
+
+        XCTAssertThrowsError(try ArchiveManager.extractEntry(
+            "b.txt",
+            from: archive,
+            originalName: "sample.tar",
+            to: root.appendingPathComponent("preview", isDirectory: true)
+        ))
+    }
+
+    func testSuggestedFolderNameStripsArchiveExtensions() {
+        XCTAssertEqual(ArchiveManager.suggestedFolderName(for: "photos.zip"), "photos")
+        XCTAssertEqual(ArchiveManager.suggestedFolderName(for: "src-1.2.tar.gz"), "src-1.2")
+        XCTAssertEqual(ArchiveManager.suggestedFolderName(for: "backup.TAR.XZ"), "backup")
+        XCTAssertEqual(ArchiveManager.suggestedFolderName(for: "data.tbz2"), "data")
+        XCTAssertEqual(ArchiveManager.suggestedFolderName(for: "资料.7z"), "资料")
+        XCTAssertEqual(ArchiveManager.suggestedFolderName(for: ".zip"), ".zip folder")
+    }
+
     private func writeTarArchive(
         entries: [(path: String, data: Data)],
         to url: URL

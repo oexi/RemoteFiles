@@ -94,6 +94,42 @@ final class RemoteArchiveServiceTests: XCTestCase {
         XCTAssertEqual(provider.createdDirectoryPaths, ["/payload"])
         XCTAssertTrue(provider.uploadedPaths.isEmpty)
     }
+
+    func testIntoFolderCreatesFolderNamedAfterArchive() async throws {
+        let fixture = try ArchiveFixture()
+        defer { fixture.remove() }
+
+        let provider = ArchiveTestProvider(archiveData: fixture.archiveData)
+
+        let destination = try await RemoteArchiveService.extractHere(
+            item: fixture.item,
+            provider: provider,
+            intoFolder: true
+        )
+
+        XCTAssertEqual(destination, "/payload")
+        XCTAssertEqual(provider.createdDirectoryPaths, ["/payload", "/payload/payload", "/payload/payload/nested"])
+        XCTAssertEqual(provider.uploadedPaths, ["/payload/payload/nested/note.txt"])
+    }
+
+    func testIntoFolderPicksNumberedNameInsteadOfMerging() async throws {
+        let fixture = try ArchiveFixture()
+        defer { fixture.remove() }
+
+        let provider = ArchiveTestProvider(archiveData: fixture.archiveData)
+        provider.seedDirectory("/payload")
+        provider.seedFile("/Payload 2")
+
+        let destination = try await RemoteArchiveService.extractHere(
+            item: fixture.item,
+            provider: provider,
+            intoFolder: true
+        )
+
+        XCTAssertEqual(destination, "/payload 3")
+        XCTAssertEqual(provider.createdDirectoryPaths.first, "/payload 3")
+        XCTAssertEqual(provider.uploadedPaths, ["/payload 3/payload/nested/note.txt"])
+    }
 }
 
 private final class ArchiveFixture {

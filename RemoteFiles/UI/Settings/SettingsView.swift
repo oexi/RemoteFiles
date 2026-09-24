@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @AppStorage(AppPreferenceKey.appearance) private var appearanceRawValue = AppAppearance.system.rawValue
     @AppStorage(AppPreferenceKey.language) private var languageRawValue = AppLanguage.system.rawValue
+    @EnvironmentObject private var appLock: AppLockManager
     @State private var cacheUsage: Int64?
     @State private var cacheError: String?
     @State private var isClearingCache = false
@@ -24,6 +25,25 @@ struct SettingsView: View {
                             Text(language.title).tag(language.rawValue)
                         }
                     }
+                }
+
+                Section {
+                    Toggle("App Lock", isOn: Binding(
+                        get: { appLock.isEnabled },
+                        set: { enabled in Task { await appLock.setEnabled(enabled) } }
+                    ))
+                    .disabled(!appLock.isEnabled && !appLock.canAuthenticate)
+                    if appLock.isEnabled {
+                        Picker("Require Unlock", selection: $appLock.timeout) {
+                            ForEach(AppLockTimeout.allCases) { timeout in
+                                Text(timeout.title).tag(timeout)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Security")
+                } footer: {
+                    Text("Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock.")
                 }
 
                 Section("About") {

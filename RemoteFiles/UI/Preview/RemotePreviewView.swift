@@ -7,10 +7,21 @@ struct RemotePreviewView: View {
     @State private var localURL: URL?
     @State private var errorMessage: String?
     @State private var showingShare = false
+    @State private var streamLoader: RemoteMediaResourceLoader?
+
+    init(provider: any RemoteFileProvider, item: RemoteItem) {
+        self.provider = provider
+        self.item = item
+        _streamLoader = State(initialValue: RemoteMediaResourceLoader(provider: provider, item: item))
+    }
 
     var body: some View {
         Group {
-            if let localURL {
+            if let streamLoader {
+                RemoteMediaPlayerView(loader: streamLoader) {
+                    self.streamLoader = nil
+                }
+            } else if let localURL {
                 QuickLookView(url: localURL)
             } else if let errorMessage {
                 ContentUnavailableView("Preview unavailable", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
@@ -39,7 +50,9 @@ struct RemotePreviewView: View {
                 .ignoresSafeArea()
             }
         }
-        .task {
+        .task(id: streamLoader == nil) {
+            // Streamed media is only downloaded when AVFoundation cannot play the stream.
+            guard streamLoader == nil, localURL == nil else { return }
             do {
                 localURL = try await CacheManager.shared.materialize(provider: provider, item: item)
             } catch {

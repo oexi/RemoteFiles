@@ -148,6 +148,70 @@ enum ArchiveManager {
         _ = try archive.extract(entry, to: destination)
     }
 
+    /// Extracts one regular-file entry of any supported format below `destination`
+    /// and returns the extracted file's URL. Used to preview a single archive member.
+    static func extractEntry(
+        _ entryPath: String,
+        from archiveURL: URL,
+        originalName: String,
+        to destination: URL
+    ) throws -> URL {
+        guard let format = format(for: originalName) else {
+            throw RemoteProviderError.unsupported("Unsupported archive format.")
+        }
+        let relativePath = try validatedRelativePath(entryPath)
+        guard !relativePath.isEmpty else {
+            throw RemoteProviderError.invalidResponse("Archive entry has an empty path.")
+        }
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let target = destination.appendingPathComponent(relativePath)
+        switch format {
+        case .zip:
+            try extract(entryPath: entryPath, from: archiveURL, to: target)
+        case .sevenZip, .rar, .tar, .tarGzip:
+            let entries = try libArchiveEntries(at: archiveURL).filter {
+                $0.path == entryPath && $0.kind == .file
+            }
+            guard entries.count == 1 else {
+                throw RemoteProviderError.invalidResponse("Archive entry does not exist.")
+            }
+            try preflight(entries: entries, destination: destination)
+            try extractLibArchive(at: archiveURL, entries: entries, to: destination, selectedPath: entryPath)
+        case .tarBzip2, .tarXz:
+            let tarEntries = try TarContainer.open(container: decodedTarData(at: archiveURL, format: format))
+            guard let match = tarEntries.first(where: {
+                $0.info.name == entryPath && remoteKind($0.info.type) == .file
+            }) else {
+                throw RemoteProviderError.invalidResponse("Archive entry does not exist.")
+            }
+            try preflight(entries: [ArchiveEntryInfo(
+                path: entryPath,
+                kind: .file,
+                uncompressedSize: UInt64(match.data?.count ?? 0),
+                compressedSize: 0
+            )], destination: destination)
+            try extract(entries: [(match.info.name, .file, match.data)], to: destination)
+        case .gzip, .bzip2, .xz:
+            try extract(archiveURL, originalName: originalName, to: destination)
+        }
+        return target
+    }
+
+    /// The folder name to extract into: the archive name without its archive extension.
+    static func suggestedFolderName(for archiveName: String) -> String {
+        let lower = archiveName.lowercased()
+        let suffixes = [
+            ".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tbz2", ".txz",
+            ".tar", ".zip", ".7z", ".rar", ".gz", ".bz2", ".xz"
+        ]
+        for suffix in suffixes where lower.hasSuffix(suffix) {
+            let stem = String(archiveName.dropLast(suffix.count))
+                .trimmingCharacters(in: .whitespaces)
+            return stem.isEmpty ? archiveName + " folder" : stem
+        }
+        return archiveName + " folder"
+    }
+
     static func createZIP(from source: URL, at destination: URL) throws {
         try FileManager.default.zipItem(at: source, to: destination, shouldKeepParent: source.hasDirectoryPath)
     }
@@ -412,7 +476,8 @@ enum ArchiveManager {
     private static func extractLibArchive(
         at archiveURL: URL,
         entries: [ArchiveEntryInfo],
-        to destination: URL
+        to destination: URL,
+        selectedPath: String? = nil
     ) throws {
         var plannedEntriesByPath: [String: ArchiveEntryInfo] = [:]
         for entry in entries {
@@ -435,6 +500,7 @@ enum ArchiveManager {
         try ArchiveReader().readDataBlocks(
             in: archiveURL,
             selecting: { entry in
+                if let selectedPath, entry.path != selectedPath { return .skip }
                 let relativePath = try validatedRelativePath(entry.path)
                 guard !relativePath.isEmpty else { return .skip }
                 guard let plannedEntry = plannedEntriesByPath[entry.path],

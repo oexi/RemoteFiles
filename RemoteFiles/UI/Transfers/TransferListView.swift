@@ -98,8 +98,11 @@ struct TransferListView: View {
             }
             .navigationTitle("Transfers")
             .toolbar {
-                Button("Clear Finished") { engine.clearFinished(using: connections) }
-                    .disabled(!engine.records.contains(where: { $0.state == .completed || $0.state == .cancelled }))
+                Button { engine.clearFinished(using: connections) } label: {
+                    Label("Clear Finished", systemImage: "clear")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(!engine.records.contains(where: { $0.state == .completed || $0.state == .cancelled }))
             }
         }
     }

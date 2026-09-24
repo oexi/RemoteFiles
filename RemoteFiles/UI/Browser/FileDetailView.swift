@@ -4,6 +4,7 @@ struct FileDetailView: View {
     @EnvironmentObject private var connections: ConnectionStore
     @EnvironmentObject private var transfers: TransferEngine
     @EnvironmentObject private var offline: OfflineStore
+    @EnvironmentObject private var history: LocationHistoryStore
 
     let provider: any RemoteFileProvider
     let item: RemoteItem
@@ -25,6 +26,20 @@ struct FileDetailView: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                let isFavorite = history.isFavorite(profileID: provider.profile.id, path: item.path)
+                Button(
+                    isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                    systemImage: isFavorite ? "star.slash" : "star"
+                ) {
+                    history.toggleFavorite(
+                        profileID: provider.profile.id,
+                        path: item.path,
+                        name: item.name,
+                        isDirectory: false
+                    )
+                }
+            }
             ToolbarItem(placement: .secondaryAction) {
                 Button(
                     offlineActionTitle,
@@ -85,6 +100,9 @@ struct FileDetailView: View {
         }
         .sheet(isPresented: $showingAccessControl) {
             AccessControlView(provider: provider, item: item)
+        }
+        .onAppear {
+            history.recordOpened(profileID: provider.profile.id, path: item.path, name: item.name)
         }
     }
 
