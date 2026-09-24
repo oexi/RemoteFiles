@@ -58,4 +58,6 @@ enum AppPreferenceKey {
     static let browserSortAscending = "RemoteFiles.Browser.SortAscending"
     static let browserFoldersFirst = "RemoteFiles.Browser.FoldersFirst"
     static let browserLayout = "RemoteFiles.Browser.Layout"
+    static let appLockEnabled = "RemoteFiles.AppLock.Enabled"
+    static let appLockTimeout = "RemoteFiles.AppLock.Timeout"
 }

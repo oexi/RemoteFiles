@@ -196,3 +196,15 @@
 "Delete Selected" = "删除所选项目";
 "Show as List" = "以列表显示";
 "Show as Grid" = "以网格显示";
+"Immediately" = "立即";
+"After 1 Minute" = "1 分钟后";
+"After 5 Minutes" = "5 分钟后";
+"After 15 Minutes" = "15 分钟后";
+"Unlock RemoteFiles" = "解锁 RemoteFiles";
+"Turn on the app lock" = "开启 App 锁";
+"Turn off the app lock" = "关闭 App 锁";
+"Unlock" = "解锁";
+"App Lock" = "App 锁";
+"Require Unlock" = "需要解锁";
+"Security" = "安全";
+"Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock." = "使用面容 ID、触控 ID 或设备密码。App 锁定时传输会继续进行。“文件”App 不受 App 锁保护。";

@@ -196,3 +196,15 @@
 "Delete Selected" = "Delete Selected";
 "Show as List" = "Show as List";
 "Show as Grid" = "Show as Grid";
+"Immediately" = "Immediately";
+"After 1 Minute" = "After 1 Minute";
+"After 5 Minutes" = "After 5 Minutes";
+"After 15 Minutes" = "After 15 Minutes";
+"Unlock RemoteFiles" = "Unlock RemoteFiles";
+"Turn on the app lock" = "Turn on the app lock";
+"Turn off the app lock" = "Turn off the app lock";
+"Unlock" = "Unlock";
+"App Lock" = "App Lock";
+"Require Unlock" = "Require Unlock";
+"Security" = "Security";
+"Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock." = "Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock.";
