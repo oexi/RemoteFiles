@@ -60,6 +60,9 @@ packages:
   TreeSitterLanguages:
     url: https://github.com/simonbs/TreeSitterLanguages.git
     revision: 15cf3a9ec3ab95e0d058b7df9f35619123c9e02d
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit.git
+    revision: 288527dffbc6d3e63cce147fc7b520c64a791603
 targets:
   RemoteFiles:
     type: application
@@ -97,6 +100,7 @@ targets:
       - package: ZIPFoundation
       - package: SWCompression
       - package: LibArchive
+      - package: MPVKit
       - package: TreeSitterLanguages
         product: TreeSitterBashRunestone
       - package: TreeSitterLanguages

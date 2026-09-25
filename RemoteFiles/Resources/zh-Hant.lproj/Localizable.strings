@@ -225,3 +225,13 @@
 "The newest SMB version the server supports is used, up to SMB 3.1.1, with signing and encryption when the server asks for them. Require Encryption refuses to connect without encryption. Multichannel opens extra connections when the server's network adapter supports RSS, as Windows does. Compression helps on slow links to Windows servers." = "自動使用伺服器支援的最新 SMB 版本（最高 SMB 3.1.1），並依伺服器要求啟用簽章和加密。「要求加密」會拒絕未加密的連線。「多通道」會在伺服器網卡支援 RSS 時額外建立連線，規則與 Windows 相同。「壓縮」適合在慢速網路上連線 Windows 伺服器。";
 "The server does not support SMB encryption for this connection. Turn off Require Encryption, or enable SMB 3 encryption on the server." = "伺服器不支援為此連線啟用 SMB 加密。請關閉「要求加密」，或在伺服器上啟用 SMB 3 加密。";
 "A response from the SMB server failed a security check, so the connection was closed. Check the network for devices that intercept traffic." = "SMB 伺服器的回應未通過安全檢查，連線已關閉。請檢查網路中是否有攔截流量的裝置。";
+"Play" = "播放";
+"Skip Back 10 Seconds" = "倒轉 10 秒";
+"Skip Forward 10 Seconds" = "快轉 10 秒";
+"Audio" = "音訊";
+"Subtitles" = "字幕";
+"Off" = "關閉";
+"Audio and Subtitles" = "音訊和字幕";
+"Track %lld" = "軌道 %lld";
+"The video player could not be started." = "無法啟動影片播放器。";
+"The file could not be played (%@)." = "無法播放此檔案（%@）。";

@@ -24,6 +24,8 @@ struct OfflineDetailView: View {
                 OfflineArchiveContentView(item: item, message: $message, working: $working)
             } else if EditorLanguage.isEditable(fileName: item.fileName) {
                 OfflineEditorView(item: item)
+            } else if MPVPlayer.isPreferred(forFileName: item.fileName) {
+                MPVPlayerView(media: .local(url))
             } else {
                 QuickLookView(url: url)
             }
@@ -227,6 +229,10 @@ private struct OfflineLocalFileDetailView: View {
                     fileName: url.lastPathComponent,
                     onSaved: { offline.fileDidChange(offlineItem) }
                 )
+            } else if MPVPlayer.isPreferred(forFileName: url.lastPathComponent) {
+                MPVPlayerView(media: .local(url))
+                    .navigationTitle(url.lastPathComponent)
+                    .navigationBarTitleDisplayMode(.inline)
             } else {
                 QuickLookView(url: url)
                     .navigationTitle(url.lastPathComponent)

@@ -7,26 +7,49 @@ struct RemotePreviewView: View {
     @State private var localURL: URL?
     @State private var errorMessage: String?
     @State private var showingShare = false
-    @State private var streamLoader: RemoteMediaResourceLoader?
+    @State private var playback: Playback
+
+    /// How the file is shown: streamed with AVFoundation, streamed with libmpv, or
+    /// downloaded to the cache first.
+    private enum Playback {
+        case native(RemoteMediaResourceLoader)
+        case mpv(RemoteByteStreamSource)
+        case download
+
+        var needsDownload: Bool {
+            if case .download = self { return true }
+            return false
+        }
+    }
 
     init(provider: any RemoteFileProvider, item: RemoteItem) {
         self.provider = provider
         self.item = item
-        _streamLoader = State(initialValue: RemoteMediaResourceLoader(provider: provider, item: item))
+        if let loader = RemoteMediaResourceLoader(provider: provider, item: item) {
+            _playback = State(initialValue: .native(loader))
+        } else {
+            _playback = State(initialValue: Self.mpvPlayback(provider: provider, item: item) ?? .download)
+        }
+    }
+
+    private static func mpvPlayback(provider: any RemoteFileProvider, item: RemoteItem) -> Playback? {
+        guard MPVPlayer.canPlay(fileName: item.name),
+              let source = RemoteByteStreamSource(provider: provider, item: item) else { return nil }
+        return .mpv(source)
     }
 
     var body: some View {
         Group {
-            if let streamLoader {
-                RemoteMediaPlayerView(loader: streamLoader) {
-                    self.streamLoader = nil
+            switch playback {
+            case .native(let loader):
+                RemoteMediaPlayerView(loader: loader) {
+                    // AVFoundation rejected the stream (for example an unsupported codec).
+                    playback = Self.mpvPlayback(provider: provider, item: item) ?? .download
                 }
-            } else if let localURL {
-                QuickLookView(url: localURL)
-            } else if let errorMessage {
-                ContentUnavailableView("Preview unavailable", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
-            } else {
-                ProgressView("Downloading preview…")
+            case .mpv(let source):
+                MPVPlayerView(media: .remote(source))
+            case .download:
+                downloadedPreview
             }
         }
         .navigationTitle(item.name)
@@ -50,13 +73,30 @@ struct RemotePreviewView: View {
                 .ignoresSafeArea()
             }
         }
-        .task(id: streamLoader == nil) {
-            // Streamed media is only downloaded when AVFoundation cannot play the stream.
-            guard streamLoader == nil, localURL == nil else { return }
+        .task(id: playback.needsDownload) {
+            // Streamed media is only downloaded when neither player can stream it.
+            guard playback.needsDownload, localURL == nil else { return }
             do {
                 localURL = try await CacheManager.shared.materialize(provider: provider, item: item)
             } catch {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var downloadedPreview: some View {
+        Group {
+            if let localURL {
+                if MPVPlayer.isPreferred(forFileName: item.name) {
+                    MPVPlayerView(media: .local(localURL))
+                } else {
+                    QuickLookView(url: localURL)
+                }
+            } else if let errorMessage {
+                ContentUnavailableView("Preview unavailable", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
+            } else {
+                ProgressView("Downloading preview…")
             }
         }
     }
