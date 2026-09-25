@@ -18,7 +18,7 @@ xcodebuild -project RemoteFiles.xcodeproj -scheme RemoteFiles \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test
 ```
 
-XcodeGen regenerates the project; `xcodebuild -resolvePackageDependencies` resolves pinned Swift packages. Choose an available iPhone simulator (CI uses iOS 27 on the `xcode-27` runner) for `<UDID>`. `gh workflow run ci.yml` starts the same CI checks manually. CI runs on pull requests and manual dispatch, not every push to `main`.
+XcodeGen regenerates the project; `xcodebuild -resolvePackageDependencies` resolves pinned Swift packages. Choose an available iPhone simulator (CI uses iOS 27 on the `xcode-27` runner) for `<UDID>`. CI runs on pull requests and manual dispatch, not on pushes. For a branch that will get a PR, open the PR (a draft is fine) instead of also running `gh workflow run ci.yml`, which would run CI twice; manual dispatch is for branches without a PR.
 
 ## Coding Style & Naming Conventions
 

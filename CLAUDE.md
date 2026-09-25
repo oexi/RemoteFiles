@@ -19,10 +19,11 @@ xcodebuild -project RemoteFiles.xcodeproj -scheme RemoteFiles \
 # UI smoke test: -only-testing:RemoteFilesUITests/LaunchTests/testLaunches
 ```
 
-- **No local Swift toolchain (e.g. Linux sessions):** CI is the compiler.
-  - Run `gh workflow run ci.yml --ref <branch>`; it builds, checks the extension's Info.plist, runs unit tests and the launch test.
-  - Logs come back as the `ci-logs` artifact: `gh run download <id> -n ci-logs`, then grep `build.log` for `error:` and `test.log` for `Test Suite`.
-  - CI runs on pull requests and manual dispatch only, not on pushes to `main`.
+- **No local Swift toolchain (e.g. Linux sessions):** CI is the compiler. It builds, checks the extension's Info.plist, runs unit tests and the launch test.
+  - CI runs on pull requests and manual dispatch only, not on pushes (to `main` or any branch).
+  - A branch that will get a PR: open the PR (a draft is fine) and let its `pull_request` run be the check; watch it with `gh pr checks --watch`. Do not also `gh workflow run` it, or CI runs twice.
+  - `gh workflow run ci.yml --ref <branch>` is only for branches without a PR. Runs share one concurrency slot per branch, so a newer run (PR or dispatch) cancels the older one.
+  - Logs come back as the `ci-logs` artifact: `gh run download <id> -n ci-logs`, then grep `build.log` for `error:` and `test.log` (unit tests and launch test) for `Test Suite`.
 - **Parallel testing must stay off.** Several tests use `URLProtocol` mocks with static state.
 - **No linter or formatter.** Run `git diff --check` before committing.
 - **Long SwiftUI modifier chains:** they can hit "unable to type-check this expression in reasonable time". Split the view into computed sub-views, as `BrowserView` does with `browserBase` / `browserWithPrompts` / `body`.
