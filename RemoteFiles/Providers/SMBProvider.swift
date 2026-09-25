@@ -349,7 +349,7 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         }
         if profile.smbMultiChannel {
             do {
-                _ = try await client.enableMultiChannel(channelCount: Self.multiChannelCount)
+                _ = try await client.enableMultiChannel(maxChannels: Self.maxMultiChannelConnections)
             } catch {
                 // Extra channels only speed up large transfers; the session
                 // keeps working on its first connection without them.
@@ -358,8 +358,12 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         return client
     }
 
-    /// Connections per session when multichannel is on.
-    static let multiChannelCount = 2
+    /// Upper bound on connections per session when multichannel is on. The
+    /// count itself follows the server's interfaces as Windows does (4 per
+    /// RSS-capable interface, 1 otherwise); each parallel connection holds
+    /// a READ/WRITE chunk of up to 8 MB, so this caps memory in the File
+    /// Provider extension.
+    static let maxMultiChannelConnections = 4
 
     private static func makeClient(host: String, port: Int, transport: SMBTransport) -> SMBClient {
         switch transport {

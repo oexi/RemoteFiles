@@ -29,7 +29,7 @@ packages:
     revision: 592434a103a4d1ab83e14f87ac6eef569dd7a99d
   SMBClient:
     url: https://github.com/oexi/SMBClient.git
-    revision: 54d9b883d936069e0d69159140b4b1243e08f023
+    revision: e54009e7dc509f4a5c004a4d6aba8aad6d7c4220
   NFSKit:
     url: https://github.com/oexi/NFSKit.git
     revision: b87f5587e1514899fa8ed383300b53ece35f4437

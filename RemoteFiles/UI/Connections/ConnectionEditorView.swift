@@ -340,7 +340,7 @@ struct ConnectionEditorView: View {
         if profile.smbTransport == .quic {
             return "SMB over QUIC runs over UDP port 443 with TLS 1.3. It needs a server that offers it, such as Windows Server 2025."
         }
-        return "The newest SMB version the server supports is used, up to SMB 3.1.1, with signing and encryption when the server asks for them. Require Encryption refuses to connect without encryption. Multichannel opens a second connection for faster transfers. Compression helps on slow links to Windows servers."
+        return "The newest SMB version the server supports is used, up to SMB 3.1.1, with signing and encryption when the server asks for them. Require Encryption refuses to connect without encryption. Multichannel opens extra connections when the server's network adapter supports RSS, as Windows does. Compression helps on slow links to Windows servers."
     }
 
     private var nearbyServersSection: some View {
