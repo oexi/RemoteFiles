@@ -766,6 +766,7 @@ private struct FileRow: View {
                     Image(uiImage: thumbnail)
                         .resizable()
                         .scaledToFill()
+                        .frame(width: 36, height: 36)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 } else {
                     WhiteSurFileIconView(
