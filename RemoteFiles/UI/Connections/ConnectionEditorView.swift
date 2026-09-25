@@ -110,6 +110,8 @@ struct ConnectionEditorView: View {
                     } footer: {
                         Text("Don't know the share name? Enter the host and account, then tap the list button to pick a shared folder from the server.")
                     }
+
+                    smbSecuritySection
                 }
 
                 if profile.protocolType == .nfs {
@@ -316,6 +318,31 @@ struct ConnectionEditorView: View {
         }
     }
 
+    private var smbSecuritySection: some View {
+        Section {
+            Picker("Transport", selection: $profile.smbTransport) {
+                ForEach(SMBTransport.allCases) { value in Text(value.title).tag(value) }
+            }
+            .onChange(of: profile.smbTransport) { oldValue, newValue in
+                if profile.port == oldValue.defaultPort { profile.port = newValue.defaultPort }
+            }
+            Toggle("Require Encryption", isOn: $profile.smbRequireEncryption)
+            Toggle("Multichannel", isOn: $profile.smbMultiChannel)
+            Toggle("Compression", isOn: $profile.smbCompression)
+        } header: {
+            Text("SMB 3")
+        } footer: {
+            Text(smbSecurityFooter)
+        }
+    }
+
+    private var smbSecurityFooter: LocalizedStringKey {
+        if profile.smbTransport == .quic {
+            return "SMB over QUIC runs over UDP port 443 with TLS 1.3. It needs a server that offers it, such as Windows Server 2025."
+        }
+        return "The newest SMB version the server supports is used, up to SMB 3.1.1, with signing and encryption when the server asks for them. Require Encryption refuses to connect without encryption. Multichannel opens a second connection for faster transfers. Compression helps on slow links to Windows servers."
+    }
+
     private var nearbyServersSection: some View {
         Section {
             if lanBrowser.servers.isEmpty {
@@ -359,9 +386,11 @@ struct ConnectionEditorView: View {
             shareChoices = try await SMBProvider.listShares(
                 host: profile.host.trimmingCharacters(in: .whitespacesAndNewlines),
                 port: profile.port,
+                transport: profile.smbTransport,
                 username: profile.username,
                 password: password,
-                domain: profile.domain
+                domain: profile.domain,
+                requireEncryption: profile.smbRequireEncryption
             )
         } catch is CancellationError {
             return

@@ -38,7 +38,11 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func connect() async throws {
-        _ = try await ensureConnected()
+        do {
+            _ = try await ensureConnected()
+        } catch {
+            throw Self.userFacingError(error)
+        }
     }
 
     func disconnect() async {
@@ -263,6 +267,17 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         retryOnDisconnect: Bool = false,
         _ body: (SMBClient) async throws -> T
     ) async throws -> T {
+        do {
+            return try await withConnectedClient(retryOnDisconnect: retryOnDisconnect, body)
+        } catch {
+            throw Self.userFacingError(error)
+        }
+    }
+
+    private func withConnectedClient<T>(
+        retryOnDisconnect: Bool,
+        _ body: (SMBClient) async throws -> T
+    ) async throws -> T {
         let client = try await ensureConnected()
         do {
             return try await body(client)
@@ -312,7 +327,10 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
         guard !profile.share.isEmpty else {
             throw RemoteProviderError.invalidConfiguration("SMB requires a share name.")
         }
-        let client = SMBClient(host: profile.host, port: profile.port)
+        let client = Self.makeClient(host: profile.host, port: profile.port, transport: profile.smbTransport)
+        if profile.smbCompression {
+            client.session.supportedCompressionAlgorithms = [.lz77]
+        }
         client.onDisconnected = { [weak self, weak client] _ in
             guard let self, let client else { return }
             self.invalidate(client)
@@ -321,14 +339,76 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
             _ = try await client.login(
                 username: credential?.username ?? profile.username,
                 password: credential?.password,
-                domain: profile.domain.isEmpty ? nil : profile.domain
+                domain: profile.domain.isEmpty ? nil : profile.domain,
+                requireEncryption: profile.smbRequireEncryption
             )
             try await client.connectShare(profile.share)
         } catch {
             client.session.disconnect()
             throw error
         }
+        if profile.smbMultiChannel {
+            do {
+                _ = try await client.enableMultiChannel(channelCount: Self.multiChannelCount)
+            } catch {
+                // Extra channels only speed up large transfers; the session
+                // keeps working on its first connection without them.
+            }
+        }
         return client
+    }
+
+    /// Connections per session when multichannel is on.
+    static let multiChannelCount = 2
+
+    private static func makeClient(host: String, port: Int, transport: SMBTransport) -> SMBClient {
+        switch transport {
+        case .tcp:
+            SMBClient(host: host, port: port)
+        case .quic:
+            SMBClient(host: host, port: port, transport: .quic)
+        }
+    }
+
+    /// Describes the negotiated session for diagnostics.
+    func sessionSummary() async throws -> SMBSessionSummary {
+        try await withClient { client in
+            SMBSessionSummary(
+                dialect: Self.dialectName(client.session.dialect),
+                transport: self.profile.smbTransport,
+                isEncrypted: client.session.isEncrypted,
+                channelCount: client.session.channels.count + 1,
+                isCompressionEnabled: client.session.isCompressionEnabled
+            )
+        }
+    }
+
+    static func dialectName(_ dialect: Negotiate.Dialects?) -> String {
+        switch dialect {
+        case .smb202: "2.0.2"
+        case .smb210: "2.1"
+        case .smb300: "3.0"
+        case .smb302: "3.0.2"
+        case .smb311: "3.1.1"
+        case nil: "unknown"
+        }
+    }
+
+    /// Replaces SMB security failures with messages a user can act on. Other
+    /// errors pass through unchanged, so status codes stay inspectable.
+    static func userFacingError(_ error: Error) -> Error {
+        switch error {
+        case MessageCipherError.encryptionNotSupported:
+            return RemoteProviderError.invalidConfiguration(String(
+                localized: "The server does not support SMB encryption for this connection. Turn off Require Encryption, or enable SMB 3 encryption on the server."
+            ))
+        case is SecurityError, is NegotiateError, is MessageCipherError, is CompressionError:
+            return RemoteProviderError.invalidResponse(String(
+                localized: "A response from the SMB server failed a security check, so the connection was closed. Check the network for devices that intercept traffic."
+            ))
+        default:
+            return error
+        }
     }
 
     /// Logs in without a share and lists the disk shares a user can open, so the
@@ -336,18 +416,27 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     static func listShares(
         host: String,
         port: Int,
+        transport: SMBTransport = .tcp,
         username: String,
         password: String?,
-        domain: String?
+        domain: String?,
+        requireEncryption: Bool = false
     ) async throws -> [SMBShareInfo] {
-        let client = SMBClient(host: host, port: port)
+        let client = makeClient(host: host, port: port, transport: transport)
         defer { client.session.disconnect() }
-        _ = try await client.login(
-            username: username,
-            password: password,
-            domain: domain?.isEmpty == false ? domain : nil
-        )
-        let shares = try await client.listShares().map {
+        let shareList: [Share]
+        do {
+            _ = try await client.login(
+                username: username,
+                password: password,
+                domain: domain?.isEmpty == false ? domain : nil,
+                requireEncryption: requireEncryption
+            )
+            shareList = try await client.listShares()
+        } catch {
+            throw userFacingError(error)
+        }
+        let shares = shareList.map {
             SMBShareInfo(
                 name: $0.name.trimmingCharacters(in: CharacterSet(charactersIn: "\0")),
                 comment: $0.comment.trimmingCharacters(in: CharacterSet(charactersIn: "\0")),
@@ -369,6 +458,11 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
 
     static func isConnectionFailure(_ error: Error) -> Bool {
         if error is ConnectionError || error is NWError { return true }
+        // A response that fails a signature, decryption or negotiate check
+        // means the connection can no longer be trusted.
+        if error is SecurityError || error is NegotiateError || error is MessageCipherError || error is CompressionError {
+            return true
+        }
         let nsError = error as NSError
         guard nsError.domain == NSPOSIXErrorDomain else { return false }
         let codes: Set<Int32> = [ECONNRESET, ECONNABORTED, ENOTCONN, EPIPE, ETIMEDOUT, ENETDOWN, ENETUNREACH, EHOSTUNREACH]
@@ -433,5 +527,25 @@ struct SMBShareInfo: Identifiable, Hashable, Sendable {
         shares
             .filter { $0.isDiskShare && !$0.isSpecial }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+}
+
+struct SMBSessionSummary: Equatable, Sendable {
+    var dialect: String
+    var transport: SMBTransport
+    var isEncrypted: Bool
+    var channelCount: Int
+    var isCompressionEnabled: Bool
+
+    var detail: String {
+        var parts = ["SMB \(dialect) over \(transport.title)"]
+        parts.append(isEncrypted ? "encrypted" : "not encrypted")
+        if channelCount > 1 {
+            parts.append("\(channelCount) channels")
+        }
+        if isCompressionEnabled {
+            parts.append("compression on")
+        }
+        return parts.joined(separator: ", ")
     }
 }

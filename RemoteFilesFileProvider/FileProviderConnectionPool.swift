@@ -64,7 +64,7 @@ final class FileProviderConnectionPool: @unchecked Sendable {
         // Reload the credential on every request so a password changed in the
         // app takes effect immediately instead of after the idle timeout.
         let credential = try CredentialVault.shared.load(for: id)
-        let fingerprint = Self.fingerprint(of: credential)
+        let fingerprint = Self.fingerprint(of: credential, profile: profile)
         let provider: any RemoteFileProvider = try lock.withLock {
             idleTasks.removeValue(forKey: id)?.cancel()
             if let existing = providers[id] {
@@ -72,7 +72,7 @@ final class FileProviderConnectionPool: @unchecked Sendable {
                     leaseCounts[id, default: 0] += 1
                     return existing
                 }
-                // Credentials changed: replace the provider. Requests still
+                // Credentials or settings changed: replace the provider. Requests still
                 // using the old one keep their reference and finish; its
                 // session closes when the last of them lets go.
             }
@@ -89,8 +89,11 @@ final class FileProviderConnectionPool: @unchecked Sendable {
         }
     }
 
-    private static func fingerprint(of credential: Credential?) -> Int {
+    /// Covers the profile too, so a connection setting changed in the app
+    /// (for example SMB encryption) takes effect on the next request.
+    private static func fingerprint(of credential: Credential?, profile: ConnectionProfile) -> Int {
         var hasher = Hasher()
+        hasher.combine(profile)
         hasher.combine(credential?.username)
         hasher.combine(credential?.password)
         hasher.combine(credential?.privateKey)

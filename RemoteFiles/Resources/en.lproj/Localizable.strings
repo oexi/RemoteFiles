@@ -216,3 +216,12 @@
 "No Shared Folders" = "No Shared Folders";
 "The server did not report any shared folders this account can open." = "The server did not report any shared folders this account can open.";
 "Shared Folders" = "Shared Folders";
+"Transport" = "Transport";
+"Require Encryption" = "Require Encryption";
+"Multichannel" = "Multichannel";
+"Compression" = "Compression";
+"SMB 3" = "SMB 3";
+"SMB over QUIC runs over UDP port 443 with TLS 1.3. It needs a server that offers it, such as Windows Server 2025." = "SMB over QUIC runs over UDP port 443 with TLS 1.3. It needs a server that offers it, such as Windows Server 2025.";
+"The newest SMB version the server supports is used, up to SMB 3.1.1, with signing and encryption when the server asks for them. Require Encryption refuses to connect without encryption. Multichannel opens a second connection for faster transfers. Compression helps on slow links to Windows servers." = "The newest SMB version the server supports is used, up to SMB 3.1.1, with signing and encryption when the server asks for them. Require Encryption refuses to connect without encryption. Multichannel opens a second connection for faster transfers. Compression helps on slow links to Windows servers.";
+"The server does not support SMB encryption for this connection. Turn off Require Encryption, or enable SMB 3 encryption on the server." = "The server does not support SMB encryption for this connection. Turn off Require Encryption, or enable SMB 3 encryption on the server.";
+"A response from the SMB server failed a security check, so the connection was closed. Check the network for devices that intercept traffic." = "A response from the SMB server failed a security check, so the connection was closed. Check the network for devices that intercept traffic.";
