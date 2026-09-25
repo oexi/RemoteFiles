@@ -24,22 +24,37 @@ enum ConnectionDiagnosticService {
         }
         steps.append(.init(title: "Configuration", status: .passed, detail: "\(endpoint.host):\(endpoint.port)"))
 
-        do {
-            let latency = try await tcpProbe(host: endpoint.host, port: endpoint.port)
-            steps.append(.init(
-                title: "Network",
-                status: .passed,
-                detail: String(format: "DNS/TCP reachable in %.0f ms", latency * 1000)
-            ))
-        } catch {
-            steps.append(.init(title: "Network", status: .failed, detail: error.localizedDescription))
-            return steps
+        if profile.protocolType == .smb && profile.smbTransport == .quic {
+            // QUIC runs over UDP, so a TCP probe says nothing about it; the
+            // authentication step below shows whether the server answered.
+            steps.append(.init(title: "Network", status: .passed, detail: "Skipped for SMB over QUIC (UDP)."))
+        } else {
+            do {
+                let latency = try await tcpProbe(host: endpoint.host, port: endpoint.port)
+                steps.append(.init(
+                    title: "Network",
+                    status: .passed,
+                    detail: String(format: "DNS/TCP reachable in %.0f ms", latency * 1000)
+                ))
+            } catch {
+                steps.append(.init(title: "Network", status: .failed, detail: error.localizedDescription))
+                return steps
+            }
         }
 
         do {
             let provider = try ProviderFactory.make(for: profile, credential: credential)
             try await provider.connect()
             steps.append(.init(title: "Authentication", status: .passed, detail: "Protocol session established."))
+
+            if let smb = provider as? SMBProvider {
+                do {
+                    let summary = try await smb.sessionSummary()
+                    steps.append(.init(title: "SMB Session", status: .passed, detail: summary.detail))
+                } catch {
+                    steps.append(.init(title: "SMB Session", status: .failed, detail: error.localizedDescription))
+                }
+            }
 
             do {
                 let path = RemotePath.normalize(profile.protocolType == .nfs ? profile.initialPath : profile.initialPath)
