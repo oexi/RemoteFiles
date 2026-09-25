@@ -25,7 +25,8 @@ struct RemotePreviewView: View {
     init(provider: any RemoteFileProvider, item: RemoteItem) {
         self.provider = provider
         self.item = item
-        if let loader = RemoteMediaResourceLoader(provider: provider, item: item) {
+        if !MPVPlayer.isPreferred(forFileName: item.name),
+           let loader = RemoteMediaResourceLoader(provider: provider, item: item) {
             _playback = State(initialValue: .native(loader))
         } else {
             _playback = State(initialValue: Self.mpvPlayback(provider: provider, item: item) ?? .download)

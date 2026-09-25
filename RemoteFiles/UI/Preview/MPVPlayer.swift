@@ -174,9 +174,14 @@ final class MPVPlayer: ObservableObject {
         return UTType(filenameExtension: ext)?.conforms(to: .audiovisualContent) == true
     }
 
-    /// Media that libmpv plays but AVFoundation and QuickLook cannot.
+    /// AVFoundation claims these containers but plays few of the codecs found in them (Xvid, DivX).
+    private nonisolated static let avFoundationUnreliableExtensions: Set<String> = ["avi", "divx"]
+
+    /// Media that libmpv plays but AVFoundation and QuickLook cannot (or only rarely can).
     nonisolated static func isPreferred(forFileName fileName: String) -> Bool {
-        canPlay(fileName: fileName) && RemoteMediaResourceLoader.playableType(forFileName: fileName) == nil
+        let ext = (fileName as NSString).pathExtension.lowercased()
+        if avFoundationUnreliableExtensions.contains(ext) { return true }
+        return canPlay(fileName: fileName) && RemoteMediaResourceLoader.playableType(forFileName: fileName) == nil
     }
 
     nonisolated static func timeString(_ seconds: Double) -> String {
