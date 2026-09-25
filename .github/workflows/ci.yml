@@ -7,8 +7,10 @@ on:
 permissions:
   contents: read
 
+# Keyed by branch rather than ref, so a pull_request run and a manual dispatch
+# of the same branch share one slot and the newer run cancels the older one.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 env:
@@ -51,24 +53,6 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Restore Xcode build cache
-        uses: actions/cache@v4
-        with:
-          path: .derivedData
-          key: derived-data-xcode${{ env.XCODE_MAJOR }}-${{ runner.arch }}-${{ hashFiles('project.yml') }}
-          restore-keys: |
-            derived-data-xcode${{ env.XCODE_MAJOR }}-${{ runner.arch }}-
-
-      - name: Resolve Swift packages
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -resolvePackageDependencies \
-            -project RemoteFiles.xcodeproj \
-            -scheme RemoteFiles \
-            -derivedDataPath .derivedData \
-            | tee resolve-packages.log
-
       - name: Select iOS Simulator
         id: simulator
         run: |
@@ -107,6 +91,7 @@ jobs:
             -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             build-for-testing \
             | tee build.log
 
@@ -132,7 +117,9 @@ jobs:
           xcrun simctl shutdown all || true
           xcrun simctl boot "${{ steps.simulator.outputs.udid }}" || true
 
-      - name: Run unit tests
+      # One xcodebuild session for both bundles avoids a second package-graph
+      # resolution and test-session startup.
+      - name: Run unit tests and UI launch test
         run: |
           set -o pipefail
           xcodebuild \
@@ -147,25 +134,12 @@ jobs:
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 120 \
             -maximum-test-execution-time-allowance 300 \
+            -enableCodeCoverage NO \
+            -skipPackageUpdates \
             -only-testing:RemoteFilesTests \
-            test-without-building \
-            | tee test.log
-
-      - name: Run UI launch test
-        run: |
-          set -o pipefail
-          xcodebuild \
-            -project RemoteFiles.xcodeproj \
-            -scheme RemoteFiles \
-            -configuration Debug \
-            -derivedDataPath .derivedData \
-            -destination "platform=iOS Simulator,id=${{ steps.simulator.outputs.udid }}" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            -parallel-testing-enabled NO \
             -only-testing:RemoteFilesUITests/LaunchTests/testLaunches \
             test-without-building \
-            | tee ui-smoke.log
+            | tee test.log
 
       - name: Upload CI logs
         if: always()
@@ -173,9 +147,7 @@ jobs:
         with:
           name: ci-logs
           path: |
-            resolve-packages.log
             build.log
             test.log
-            ui-smoke.log
             xcode-version.log
           if-no-files-found: ignore
