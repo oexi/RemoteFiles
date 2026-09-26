@@ -5,15 +5,12 @@ import UIKit
 struct SystemDocumentPicker: UIViewControllerRepresentable {
     enum Mode {
         case files
-        case folder
         case privateKey
 
         var contentTypes: [UTType] {
             switch self {
             case .files:
                 return [.item]
-            case .folder:
-                return [.folder]
             case .privateKey:
                 // OpenSSH private keys are commonly extensionless, .pem, or arbitrary
                 // text/data files. `.item` keeps extensionless keys selectable.
@@ -21,23 +18,15 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
             }
         }
 
-        var asCopy: Bool {
-            switch self {
-            case .files, .privateKey:
-                return true
-            case .folder:
-                return false
-            }
-        }
+        /// Both modes copy the picked file into the app, which also works
+        /// under LiveContainer without its file-picker fix.
+        var asCopy: Bool { true }
 
         var allowsMultipleSelection: Bool {
             switch self {
             case .files:
                 return true
-            case .folder, .privateKey:
-                // With multiple selection the folder picker shows checkboxes,
-                // and Open never returned the folder being viewed, so
-                // nothing happened. Single selection makes Open pick it.
+            case .privateKey:
                 return false
             }
         }

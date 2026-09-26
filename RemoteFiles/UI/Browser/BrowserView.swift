@@ -206,12 +206,13 @@ struct BrowserView: View {
                 Task { await model.createFolder(name: name) }
             }
         }
-        // Folders use SwiftUI's importer: presented from UIKit, the folder
-        // picker never handed back the folder after Open.
+        // Folders are opened in place (a folder cannot be picked as a copy).
+        // Under LiveContainer that needs its "Fix File Picker" setting,
+        // otherwise Open does nothing; see README.
         .fileImporter(
             isPresented: $showingFolderImporter,
             allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
+            allowsMultipleSelection: true
         ) { result in
             switch result {
             case .success(let urls):
