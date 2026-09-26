@@ -248,14 +248,26 @@ final class OfflineStore: ObservableObject {
         }
     }
 
+    /// Extracts an offline archive into the Offline list, the way "Extract Here" does in the
+    /// browser. With `intoFolder`, everything goes into one new offline folder named after the
+    /// archive (numbered when an offline item already has that name); otherwise every top-level
+    /// item of the archive becomes an offline item of its own. `progress` receives the
+    /// extracted fraction. Returns the inserted items.
     @discardableResult
-    func extractArchive(_ item: OfflineItem) async throws -> Int {
+    func extractArchive(
+        _ item: OfflineItem,
+        intoFolder: Bool = false,
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) async throws -> [OfflineItem] {
         let archiveURL = localURL(for: item)
         guard ArchiveManager.canOpen(fileName: item.fileName) else {
             throw RemoteProviderError.unsupported("This offline file is not a supported archive.")
         }
 
         let offlineRoot = root
+        let folderName = intoFolder
+            ? ArchiveManager.extractionFolderName(for: item.fileName, taken: items.map(\.fileName))
+            : nil
         let inserted = try await Task.detached(priority: .userInitiated) {
             let extractionRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("RemoteFilesOfflineExtract", isDirectory: true)
@@ -263,34 +275,42 @@ final class OfflineStore: ObservableObject {
             try FileManager.default.createDirectory(at: extractionRoot, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: extractionRoot) }
 
-            try ArchiveManager.extract(archiveURL, originalName: item.fileName, to: extractionRoot)
-            let files = try Self.regularFiles(under: extractionRoot)
+            try ArchiveManager.extract(archiveURL, originalName: item.fileName, to: extractionRoot, progress: progress)
+            let sources = try folderName == nil
+                ? FileManager.default.contentsOfDirectory(
+                    at: extractionRoot,
+                    includingPropertiesForKeys: [.isDirectoryKey]
+                ).sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                : [extractionRoot]
             var records: [OfflineItem] = []
-            var copiedDestinations: [URL] = []
+            var movedDestinations: [URL] = []
 
             do {
-                for file in files {
+                for source in sources {
+                    let isDirectory = try source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+                    let name = folderName ?? source.lastPathComponent
                     let id = UUID()
-                    let safeName = file.lastPathComponent.replacingOccurrences(of: "/", with: "_")
-                    let stored = id.uuidString + "-" + safeName
-                    let destination = offlineRoot.appendingPathComponent(stored)
-                    try FileManager.default.copyItem(at: file, to: destination)
-                    copiedDestinations.append(destination)
-                    let values = try? file.resourceValues(forKeys: [.fileSizeKey])
-                    let relativePath = file.path.replacingOccurrences(of: extractionRoot.path + "/", with: "")
+                    let stored = id.uuidString + "-" + name.replacingOccurrences(of: "/", with: "_")
+                    let destination = offlineRoot.appendingPathComponent(stored, isDirectory: isDirectory)
+                    try FileManager.default.moveItem(at: source, to: destination)
+                    movedDestinations.append(destination)
+                    let size: Int64? = try isDirectory
+                        ? Self.localTreeSize(at: destination)
+                        : destination.resourceValues(forKeys: [.fileSizeKey]).fileSize.map { Int64($0) }
                     records.append(OfflineItem(
                         id: id,
                         profileID: item.profileID,
                         profileName: item.profileName + " · extracted",
-                        remotePath: item.remotePath + "::" + relativePath,
-                        fileName: file.lastPathComponent,
+                        remotePath: item.remotePath + "::" + name,
+                        fileName: name,
                         storedFileName: stored,
-                        size: values?.fileSize.map { Int64($0) },
-                        pinnedAt: Date()
+                        size: size,
+                        pinnedAt: Date(),
+                        isDirectory: isDirectory
                     ))
                 }
             } catch {
-                for destination in copiedDestinations {
+                for destination in movedDestinations {
                     try? FileManager.default.removeItem(at: destination)
                 }
                 throw error
@@ -300,7 +320,7 @@ final class OfflineStore: ObservableObject {
 
         items.insert(contentsOf: inserted, at: 0)
         persist()
-        return inserted.count
+        return inserted
     }
 
     private func load() {
@@ -420,21 +440,6 @@ final class OfflineStore: ObservableObject {
                 )
             }
         }
-    }
-
-    private nonisolated static func regularFiles(under root: URL) throws -> [URL] {
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: []
-        ) else { return [] }
-
-        var files: [URL] = []
-        for case let url as URL in enumerator {
-            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
-            if values.isRegularFile == true { files.append(url) }
-        }
-        return files
     }
 
     private nonisolated static func localTreeSize(at root: URL) throws -> Int64 {

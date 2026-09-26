@@ -100,6 +100,8 @@
 "Extract Here" = "在此解壓縮";
 "Extract to Offline" = "解壓縮到離線";
 "Extracting…" = "正在解壓縮…";
+"Downloading archive…" = "正在下載壓縮檔…";
+"Uploading extracted files…" = "正在上傳解壓縮的檔案…";
 "Search this folder" = "搜尋此資料夾";
 "Folder name" = "資料夾名稱";
 "Error" = "錯誤";

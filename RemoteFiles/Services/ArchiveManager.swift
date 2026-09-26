@@ -37,7 +37,14 @@ enum ArchiveManager {
         switch format {
         case .zip:
             return try zipEntries(at: archiveURL)
-        case .sevenZip, .rar, .tar, .tarGzip:
+        case .sevenZip:
+            guard let sevenZipEntries = try decodedSevenZipEntries(at: archiveURL) else {
+                return try libArchiveEntries(at: archiveURL)
+            }
+            let entries = sevenZipEntries.map(sevenZipEntryInfo)
+            try preflight(entries: entries)
+            return entries
+        case .rar, .tar, .tarGzip:
             return try libArchiveEntries(at: archiveURL)
         case .tarBzip2, .tarXz:
             return try legacyTarEntries(at: archiveURL, format: format)
@@ -54,7 +61,14 @@ enum ArchiveManager {
         }
     }
 
-    static func extract(_ archiveURL: URL, originalName: String, to destination: URL) throws {
+    /// Extracts the whole archive below `destination`. `progress` receives the fraction of
+    /// uncompressed bytes written so far, at most about once per percent.
+    static func extract(
+        _ archiveURL: URL,
+        originalName: String,
+        to destination: URL,
+        progress: ((Double) -> Void)? = nil
+    ) throws {
         guard let format = format(for: originalName) else {
             throw RemoteProviderError.unsupported("Unsupported archive format.")
         }
@@ -63,6 +77,7 @@ enum ArchiveManager {
         case .zip:
             let entries = try zipEntries(at: archiveURL)
             try preflight(entries: entries, destination: destination)
+            let reporter = progressReporter(for: entries, progress)
             let archive = try Archive(url: archiveURL, accessMode: .read)
             for entry in archive {
                 let relativePath = try validatedRelativePath(entry.path)
@@ -80,19 +95,47 @@ enum ArchiveManager {
                         at: target.deletingLastPathComponent(),
                         withIntermediateDirectories: true
                     )
-                    _ = try archive.extract(entry, to: target)
+                    try extractZipFile(entry, from: archive, to: target, reporter: reporter)
                 }
             }
-        case .sevenZip, .rar, .tar, .tarGzip:
+        case .sevenZip:
+            if let sevenZipEntries = try decodedSevenZipEntries(at: archiveURL) {
+                let entries = sevenZipEntries.map(sevenZipEntryInfo)
+                try preflight(entries: entries, destination: destination)
+                try extract(
+                    entries: sevenZipEntries.map { ($0.info.name, remoteKind($0.info.type), $0.data) },
+                    to: destination,
+                    reporter: progressReporter(for: entries, progress)
+                )
+            } else {
+                let entries = try libArchiveEntries(at: archiveURL)
+                try preflight(entries: entries, destination: destination)
+                try extractLibArchive(
+                    at: archiveURL,
+                    entries: entries,
+                    to: destination,
+                    reporter: progressReporter(for: entries, progress)
+                )
+            }
+        case .rar, .tar, .tarGzip:
             let entries = try libArchiveEntries(at: archiveURL)
             try preflight(entries: entries, destination: destination)
-            try extractLibArchive(at: archiveURL, entries: entries, to: destination)
+            try extractLibArchive(
+                at: archiveURL,
+                entries: entries,
+                to: destination,
+                reporter: progressReporter(for: entries, progress)
+            )
         case .tarBzip2, .tarXz:
             let tarData = try decodedTarData(at: archiveURL, format: format)
             let entries = try legacyTarEntries(from: tarData)
             try preflight(entries: entries, destination: destination)
             let tarEntries = try TarContainer.open(container: tarData)
-            try extract(entries: tarEntries.map { ($0.info.name, remoteKind($0.info.type), $0.data) }, to: destination)
+            try extract(
+                entries: tarEntries.map { ($0.info.name, remoteKind($0.info.type), $0.data) },
+                to: destination,
+                reporter: progressReporter(for: entries, progress)
+            )
         case .gzip, .bzip2, .xz:
             let relativePath = try validatedRelativePath(outputName(for: originalName))
             let data = try decodeSingleFile(at: archiveURL, format: format)
@@ -110,6 +153,7 @@ enum ArchiveManager {
             )
             try data.write(to: output, options: .atomic)
         }
+        progress?(1)
     }
 
     static func extract(entryPath: String, from archiveURL: URL, to destination: URL) throws {
@@ -168,15 +212,20 @@ enum ArchiveManager {
         switch format {
         case .zip:
             try extract(entryPath: entryPath, from: archiveURL, to: target)
-        case .sevenZip, .rar, .tar, .tarGzip:
-            let entries = try libArchiveEntries(at: archiveURL).filter {
-                $0.path == entryPath && $0.kind == .file
+        case .sevenZip:
+            if let sevenZipEntries = try decodedSevenZipEntries(at: archiveURL) {
+                guard let match = sevenZipEntries.first(where: {
+                    $0.info.name == entryPath && remoteKind($0.info.type) == .file
+                }) else {
+                    throw RemoteProviderError.invalidResponse("Archive entry does not exist.")
+                }
+                try preflight(entries: [sevenZipEntryInfo(match)], destination: destination)
+                try extract(entries: [(match.info.name, .file, match.data)], to: destination)
+            } else {
+                try extractLibArchiveEntry(entryPath, from: archiveURL, to: destination)
             }
-            guard entries.count == 1 else {
-                throw RemoteProviderError.invalidResponse("Archive entry does not exist.")
-            }
-            try preflight(entries: entries, destination: destination)
-            try extractLibArchive(at: archiveURL, entries: entries, to: destination, selectedPath: entryPath)
+        case .rar, .tar, .tarGzip:
+            try extractLibArchiveEntry(entryPath, from: archiveURL, to: destination)
         case .tarBzip2, .tarXz:
             let tarEntries = try TarContainer.open(container: decodedTarData(at: archiveURL, format: format))
             guard let match = tarEntries.first(where: {
@@ -212,6 +261,20 @@ enum ArchiveManager {
         return archiveName + " folder"
     }
 
+    /// `suggestedFolderName(for:)`, numbered ("name 2", "name 3", …) when a name in
+    /// `taken` already uses it, compared case-insensitively.
+    static func extractionFolderName(for archiveName: String, taken: [String]) -> String {
+        let takenNames = Set(taken.map { $0.lowercased() })
+        let baseName = suggestedFolderName(for: archiveName)
+        var folderName = baseName
+        var suffix = 2
+        while takenNames.contains(folderName.lowercased()) {
+            folderName = "\(baseName) \(suffix)"
+            suffix += 1
+        }
+        return folderName
+    }
+
     static func createZIP(from source: URL, at destination: URL) throws {
         try FileManager.default.zipItem(at: source, to: destination, shouldKeepParent: source.hasDirectoryPath)
     }
@@ -242,7 +305,7 @@ enum ArchiveManager {
         var result: [ArchiveEntryInfo] = []
         var normalizedPaths = Set<String>()
         var totalBytes: UInt64 = 0
-        try ArchiveReader().readDataBlocks(
+        try withLibArchiveErrors { try ArchiveReader().readDataBlocks(
             in: url,
             selecting: { entry in
                 guard result.count < maxArchiveEntryCount else {
@@ -272,9 +335,70 @@ enum ArchiveManager {
             }
         ) { _, _ in
             .continueReading
-        }
+        } }
         try preflight(entries: result)
         return result
+    }
+
+    private static func sevenZipEntryInfo(_ entry: SevenZipEntry) -> ArchiveEntryInfo {
+        ArchiveEntryInfo(
+            path: entry.info.name,
+            kind: remoteKind(entry.info.type),
+            uncompressedSize: UInt64(entry.data?.count ?? 0),
+            compressedSize: 0
+        )
+    }
+
+    /// The bundled libarchive is built without liblzma, so it cannot decode LZMA or LZMA2,
+    /// which 7-Zip uses by default (usually for the archive header as well). SWCompression
+    /// decodes those in memory. This returns nil when the archive is too large to decode in
+    /// memory or uses a method SWCompression lacks (PPMd, BCJ filters); libarchive streams
+    /// those instead.
+    private static func decodedSevenZipEntries(at url: URL) throws -> [SevenZipEntry]? {
+        guard try archiveFileSize(at: url) <= maxLegacyCompressedBytes else { return nil }
+        let entries: [SevenZipEntry]
+        do {
+            entries = try SevenZipContainer.open(container: boundedLegacyInput(at: url))
+        } catch SevenZipError.compressionNotSupported, SevenZipError.multiStreamNotSupported {
+            return nil
+        } catch SevenZipError.encryptionNotSupported {
+            throw RemoteProviderError.unsupported("Encrypted 7-Zip archives are not supported.")
+        } catch let error as SevenZipError {
+            throw RemoteProviderError.invalidResponse("Unable to read the 7-Zip archive (\(error)).")
+        }
+        guard entries.count <= maxArchiveEntryCount else {
+            throw RemoteProviderError.invalidResponse("Archive contains too many entries.")
+        }
+        var decodedBytes: UInt64 = 0
+        for entry in entries {
+            decodedBytes += UInt64(entry.data?.count ?? 0)
+            guard decodedBytes <= maxLegacyDecodedBytes else {
+                throw RemoteProviderError.invalidResponse(
+                    "This compressed format is limited to \(maxLegacyDecodedBytes) decoded bytes."
+                )
+            }
+        }
+        // Anti-items only mark deletions for an update of an existing archive.
+        return entries.filter { !$0.info.isAnti }
+    }
+
+    /// libarchive-swift's errors reach the UI as "LibArchive.ArchiveError error N", which
+    /// hides the reason. Rethrow them with libarchive's own message.
+    private static func withLibArchiveErrors<T>(_ body: () throws -> T) throws -> T {
+        do {
+            return try body()
+        } catch let error as ArchiveError {
+            switch error {
+            case .readFailed(let message), .writeFailed(let message):
+                throw RemoteProviderError.invalidResponse(message)
+            case .cannotOpenArchive(_, let message), .cannotCreateDirectory(_, let message):
+                throw RemoteProviderError.invalidResponse(message)
+            case .unsafeEntryPath(let path), .unsafeLinkPath(let path, _):
+                throw RemoteProviderError.invalidResponse("Blocked an unsafe archive path: \(path)")
+            default:
+                throw RemoteProviderError.invalidResponse("The archive could not be read: \(error).")
+            }
+        }
     }
 
     private static func archiveEntryInfo(_ entry: ArchiveEntry) throws -> ArchiveEntryInfo {
@@ -477,7 +601,8 @@ enum ArchiveManager {
         at archiveURL: URL,
         entries: [ArchiveEntryInfo],
         to destination: URL,
-        selectedPath: String? = nil
+        selectedPath: String? = nil,
+        reporter: ByteProgressReporter? = nil
     ) throws {
         var plannedEntriesByPath: [String: ArchiveEntryInfo] = [:]
         for entry in entries {
@@ -497,7 +622,7 @@ enum ArchiveManager {
             }
         }
 
-        try ArchiveReader().readDataBlocks(
+        try withLibArchiveErrors { try ArchiveReader().readDataBlocks(
             in: archiveURL,
             selecting: { entry in
                 if let selectedPath, entry.path != selectedPath { return .skip }
@@ -591,11 +716,55 @@ enum ArchiveManager {
             try outputHandle.seek(toFileOffset: UInt64(block.offset))
             try outputHandle.write(contentsOf: block.data)
             outputBytes = max(outputBytes, UInt64(endOffset))
+            reporter?.advance(by: UInt64(block.data.count))
             return .continueReading
+        } }
+    }
+
+    private static func extractLibArchiveEntry(_ entryPath: String, from archiveURL: URL, to destination: URL) throws {
+        let entries = try libArchiveEntries(at: archiveURL).filter {
+            $0.path == entryPath && $0.kind == .file
+        }
+        guard entries.count == 1 else {
+            throw RemoteProviderError.invalidResponse("Archive entry does not exist.")
+        }
+        try preflight(entries: entries, destination: destination)
+        try extractLibArchive(at: archiveURL, entries: entries, to: destination, selectedPath: entryPath)
+    }
+
+    /// Streams one ZIP file entry to `target`, reporting every decompressed chunk.
+    private static func extractZipFile(
+        _ entry: ZIPFoundation.Entry,
+        from archive: ZIPFoundation.Archive,
+        to target: URL,
+        reporter: ByteProgressReporter?
+    ) throws {
+        guard FileManager.default.createFile(atPath: target.path, contents: nil) else {
+            throw RemoteProviderError.invalidResponse("Unable to create \(target.lastPathComponent).")
+        }
+        let handle = try FileHandle(forWritingTo: target)
+        defer { try? handle.close() }
+        _ = try archive.extract(entry) { chunk in
+            try handle.write(contentsOf: chunk)
+            reporter?.advance(by: UInt64(chunk.count))
         }
     }
 
-    private static func extract(entries: [(String, RemoteItemKind, Data?)], to destination: URL) throws {
+    private static func progressReporter(
+        for entries: [ArchiveEntryInfo],
+        _ progress: ((Double) -> Void)?
+    ) -> ByteProgressReporter? {
+        guard let progress else { return nil }
+        // preflight has already bounded the total, so this cannot overflow.
+        let totalBytes = entries.lazy.filter { $0.kind == .file }.reduce(0) { $0 + $1.uncompressedSize }
+        return ByteProgressReporter(totalBytes: totalBytes, report: progress)
+    }
+
+    private static func extract(
+        entries: [(String, RemoteItemKind, Data?)],
+        to destination: URL,
+        reporter: ByteProgressReporter? = nil
+    ) throws {
         for (path, kind, data) in entries {
             let relativePath = try validatedRelativePath(path)
             guard !relativePath.isEmpty else { continue }
@@ -610,6 +779,7 @@ enum ArchiveManager {
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 guard let data else { continue }
                 try data.write(to: target, options: .atomic)
+                reporter?.advance(by: UInt64(data.count))
             case .unknown:
                 continue
             }
@@ -645,5 +815,39 @@ enum ArchiveManager {
             components.append(component)
         }
         return components.joined(separator: "/")
+    }
+}
+
+/// Turns completed byte counts into a fraction for a progress bar. It reports only when the
+/// fraction moves by at least a percent (and once at completion), so every report can
+/// afford a hop to the main actor.
+final class ByteProgressReporter {
+    private let totalBytes: UInt64
+    private let report: (Double) -> Void
+    private var completedBytes: UInt64 = 0
+    private var lastReported: Double?
+
+    init(totalBytes: UInt64, report: @escaping (Double) -> Void) {
+        self.totalBytes = totalBytes
+        self.report = report
+    }
+
+    func advance(by bytes: UInt64) {
+        let (sum, overflow) = completedBytes.addingReportingOverflow(bytes)
+        completedBytes = overflow ? totalBytes : min(sum, totalBytes)
+        send(totalBytes == 0 ? 0 : Double(completedBytes) / Double(totalBytes))
+    }
+
+    func finish() {
+        send(1)
+    }
+
+    private func send(_ fraction: Double) {
+        if let lastReported {
+            if lastReported >= 1 { return }
+            if fraction < 1, fraction - lastReported < 0.01 { return }
+        }
+        lastReported = fraction
+        report(fraction)
     }
 }
