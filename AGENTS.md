@@ -1,33 +1,152 @@
-# Repository Guidelines
+# AGENTS.md
 
-## Project Structure & Module Organization
+Guidance for coding agents (Claude Code, Codex and others) working in this repository.
 
-`project.yml` is the XcodeGen source of truth; do not edit the generated `RemoteFiles.xcodeproj`. The iOS app lives in `RemoteFiles/`: `App` starts the app, `Core` defines provider and transfer contracts, `Models` holds persisted data, `Providers` implements FTP/FTPS, SFTP, SMB, WebDAV, and NFS, `Services` handles storage and utilities, and `UI` contains SwiftUI screens. Icons and translations are in `RemoteFiles/Resources`. The system Files integration is a separate target in `RemoteFilesFileProvider/`. Tests are in `RemoteFilesTests/` and `RemoteFilesUITests/`; `altstore.json` describes the published sideloading source.
+RemoteFiles is an iPhone/iPad SwiftUI file manager for FTP/FTPS, SFTP, SMB, WebDAV and NFS, with a File Provider extension for the system Files app.
 
-## Build, Test, and Development Commands
+## Project structure
 
-Use macOS with Xcode 26 and XcodeGen. From the repository root:
+`project.yml` (XcodeGen) is the source of truth. `RemoteFiles.xcodeproj` is generated and git-ignored, so never edit it.
+
+- `RemoteFiles/`: the app. `App` starts it, `Core` defines provider and transfer contracts, `Models` holds persisted data, `Providers` implements the protocols, `Services` handles storage and utilities, `UI` contains the SwiftUI screens, `Resources` holds icons and translations.
+- `RemoteFilesFileProvider/`: the File Provider extension for the Files app.
+- `RemoteFilesTests/`, `RemoteFilesUITests/`: unit tests and the UI launch smoke test.
+- `altstore.json`: the SideStore/LiveContainer source, updated by the release workflow.
+
+## Build and test
+
+Toolchain: macOS, Xcode 26 (CI builds with Xcode 27), Swift 5.9 language mode, iOS 17 deployment target. Install XcodeGen with `brew install xcodegen`.
 
 ```sh
-brew install xcodegen
 xcodegen generate
 xcodebuild -resolvePackageDependencies -project RemoteFiles.xcodeproj -scheme RemoteFiles
 xcrun simctl list devices available
 xcodebuild -project RemoteFiles.xcodeproj -scheme RemoteFiles \
   -destination 'platform=iOS Simulator,id=<UDID>' \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO test
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+  -parallel-testing-enabled NO -only-testing:RemoteFilesTests test
+# Single test: -only-testing:RemoteFilesTests/TransferEngineTests/testSomething
+# UI smoke test: -only-testing:RemoteFilesUITests/LaunchTests/testLaunches
 ```
 
-XcodeGen regenerates the project; `xcodebuild -resolvePackageDependencies` resolves pinned Swift packages. Choose an available iPhone simulator (CI uses iOS 27 on the `xcode-27` runner) for `<UDID>`. CI runs on pull requests and manual dispatch, not on pushes. For a branch that will get a PR, open the PR (a draft is fine) instead of also running `gh workflow run ci.yml`, which would run CI twice; manual dispatch is for branches without a PR.
+- **Parallel testing must stay off.** Several tests use `URLProtocol` mocks with static state.
+- **No linter or formatter.** Run `git diff --check` before committing.
+- **Long SwiftUI modifier chains** can hit "unable to type-check this expression in reasonable time". Split the view into computed sub-views, as `BrowserView` does with `browserBase` / `browserWithPrompts` / `body`.
 
-## Coding Style & Naming Conventions
+### CI
 
-Follow nearby Swift 5.9 code: four-space indentation, `UpperCamelCase` types, `lowerCamelCase` members, and one protocol implementation per provider file. Keep remote operations `async throws`, preserve `Sendable` boundaries, and keep observable UI state on `@MainActor`. No formatter or linter is configured; run `git diff --check` before committing. Do not turn network or filesystem errors into “item not found” with broad `try?` handling.
+Without a local Swift toolchain (for example in a Linux session), CI is the compiler. It builds, checks the extension's Info.plist, and runs the unit tests and the launch test on the `xcode-27` runner with an iOS 27 simulator.
 
-## Testing Guidelines
+- CI runs on pull requests and manual dispatch only, not on pushes (to `main` or any branch).
+- For a branch that will get a PR, open the PR (a draft is fine) and let its `pull_request` run be the check; watch it with `gh pr checks --watch`. Do not also `gh workflow run` it, or CI runs twice.
+- `gh workflow run ci.yml --ref <branch>` is only for branches without a PR. Runs share one concurrency slot per branch, so a newer run (PR or dispatch) cancels the older one.
+- Logs come back as the `ci-logs` artifact: `gh run download <id> -n ci-logs`, then grep `build.log` for `error:` and `test.log` (unit tests and launch test) for `Test Suite`.
+- `gh pr edit` fails on this repository with a GraphQL "Projects (classic) is being deprecated" error. Edit a PR's title or body with `gh api -X PATCH repos/oexi/RemoteFiles/pulls/<n> -f title=… -F body=@file` instead.
 
-Use XCTest. Name files `<Subject>Tests.swift` and methods `test<Behavior>`. Add focused regression tests for changed behavior, especially failures, cancellation, and overwrite conflicts. Prefer fake providers or in-memory stores over live servers or the simulator Keychain. Run the relevant unit tests and the UI launch smoke test before release; no numeric coverage threshold is configured.
+## Coding style
 
-## Commit & Pull Request Guidelines
+Follow nearby Swift 5.9 code: four-space indentation, `UpperCamelCase` types, `lowerCamelCase` members, and one protocol implementation per provider file. Keep remote operations `async throws`, preserve `Sendable` boundaries, and keep observable UI state on `@MainActor`. Do not turn network or filesystem errors into "item not found" with broad `try?` handling.
 
-Recent commits use short imperative subjects such as `Fix WebDAV initial-directory probe` and `Add SideStore and LiveContainer AltSource`. PRs should explain the user-visible change, affected protocols, validation performed, and any remaining limitation; include screenshots for UI changes and link an issue when one exists. For releases, increment versions in `project.yml`, use a matching `vX.Y.Z` tag, and update `altstore.json` to the published IPA URL, size, and version. Never commit credentials or signing material.
+UI strings live in `Resources/{en,zh-Hans,zh-Hant}.lproj/Localizable.strings`. Add new keys to all three files; zh-Hant uses 資料夾 / 檔案 / 伺服器 terminology.
+
+## Testing
+
+- **XCTest only:** unit tests go in `RemoteFilesTests`, named `<Subject>Tests.swift` / `test<Behavior>`. Add focused regression tests for changed behavior, especially failures, cancellation and overwrite conflicts. No numeric coverage threshold is configured.
+- **No live servers:** use fakes and injection points instead:
+  - `MemoryRemoteProvider` (an in-memory file system; several instances can share one `Storage`; failures injected per operation string such as `"upload:/a.txt"`)
+  - `TransferEngine(fileURL:makeProvider:)`
+  - `BrowserViewModel(profile:makeProvider:)`
+  - `WebDAVProvider(profile:credential:session:)` with a custom `URLProtocol`
+- **Keychain and File Provider in tests:** `ConnectionStore` and `FileProviderDomainManager` skip File Provider domain registration and signalling under XCTest. Avoid tests that depend on the real keychain.
+
+## Commits, pull requests and releases
+
+- Commit subjects are short and imperative, such as `Fix WebDAV initial-directory probe`.
+- A PR explains the user-visible change, the affected protocols, the validation performed and any remaining limitation. Include screenshots for UI changes and link an issue when one exists.
+- Never commit credentials or signing material.
+
+To release:
+
+1. Bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `project.yml`.
+2. Merge to `main`.
+3. Push the tag `vX.Y.Z`. It must equal `MARKETING_VERSION`, or `release.yml` fails.
+
+The tag workflow then builds an unsigned IPA, publishes the GitHub Release, and commits the updated `altstore.json` to `main` on its own. `workflow_dispatch` on a branch only produces the IPA artifact.
+
+## Architecture
+
+### Targets and shared code
+
+The app target compiles all of `RemoteFiles/`. The `RemoteFilesFileProvider` extension target compiles only its own folder plus these shared sources:
+
+- `RemoteFiles/Core` (except `TransferEngine.swift`)
+- `RemoteFiles/Models`
+- `RemoteFiles/Providers`
+- a few files explicitly listed in `project.yml` (`AppVersion`, `CredentialVault`, `SSHHostKeyStore`, `WindowsSecurityDescriptorParser`)
+
+Consequences:
+
+- Code in Core, Models or Providers must be extension-safe (`APPLICATION_EXTENSION_API_ONLY`): no `UIApplication` and no app-only services.
+- A Services file the extension needs must be added to the extension's `sources` in `project.yml`.
+- App and extension share the app group `group.com.oexi.RemoteFiles` (profiles, identity and snapshot state) and the keychain access group `…com.oexi.RemoteFiles.shared` (credentials, SSH host keys, TLS pins).
+
+### Provider layer
+
+- **Core protocol:** `RemoteFileProvider` (`Core/RemoteFileProvider.swift`). All operations are `async throws`, and paths are absolute, server-side, normalized with `RemotePath`.
+- **Opt-in protocols:** extra abilities are separate protocols, detected with `as?`:
+  - `RemoteChunkReadableProvider` / `RemoteChunkWritableProvider` (range I/O and streaming sessions, used for resumable transfers and byte-level progress)
+  - `RemoteChunkReadSupportProbing`
+  - `RemoteSymbolicLinkInspecting`
+
+  `ProviderCapabilities` separately advertises what the UI may offer.
+- **Not-found contract:** a provider must map its native "missing item" error to `RemoteProviderError.notFound`. Callers branch on `RemoteProviderError.isNotFound(_:)` for existence checks (paste-name probing, resume, safe replace). Never turn other errors into "not found".
+- **Overwrite contract:** `move(overwrite: false)` and `upload(overwrite: false)` must refuse an existing target, and `move(overwrite: true)` must replace an existing file. SFTP v3 RENAME, SMBClient's rename and FTP RNTO do not do this natively, so those providers check first and replace through `RemoteFileOperations.renameReplacingFile` (move the old file aside, rename the new one in, restore on failure). WebDAV (`Overwrite` / `If-None-Match`) and NFS do it natively.
+- **Construction:** `ProviderFactory.make(for:credential:)` builds a provider from a `ConnectionProfile`, loading the credential from `CredentialVault` if none is passed.
+- **Connection lifecycle:** differs per protocol.
+  - SFTP (Citadel) and SMB (forked SMBClient) connect lazily. Connection state sits behind an `NSLock`, and concurrent callers share one in-flight connect task. A dropped session is replaced on the next call.
+  - SFTP, SMB and WebDAV close their connection in `deinit`. Whoever holds the provider keeps the connection alive, so don't call `disconnect()` on a provider something else may still be using.
+  - WebDAV recreates its `URLSession` after `disconnect()`. `WebDAVSessionDelegate` handles Digest/NTLM auth and TLS pinning.
+  - FTP disables chunked reads (`supportsChunkedReads` returns false), because FilesProvider opens a new connection for every range.
+- **Certificates:** when `verifyTLS` is off, WebDAV pins the first certificate it sees (`Core/TLSCertificateTrust.swift`), while FTPS accepts any certificate (a FilesProvider limitation).
+- **ECDSA keys:** Citadel only parses Ed25519/RSA OpenSSH keys. ECDSA keys and their bcrypt passphrase encryption are handled by `SSHPrivateKeyLoader` and `BCryptPBKDF` (the Blowfish tables in `BCryptPBKDF+Constants.swift` are generated digits of pi).
+
+### Transfers (`Core/TransferEngine.swift`, app only)
+
+- **State:** a `@MainActor` engine that persists `TransferRecord`s to `transfers.json`. Record kinds: `serverToServer`, `upload`, `download`.
+- **Execution ownership:** each run holds a `TransferExecutionToken`. Guard state mutations with `update(_:token:)`, so a cancelled or retried task can't overwrite a newer run.
+- **Resumable copies:**
+  - Data streams into a hidden sibling file `.remotefiles-<record-uuid>.partial`, which is then renamed into place.
+  - `commitPending` covers the rename window, so a relaunch can reconcile an interrupted commit.
+  - `TransferResumePolicy` decides between resume and restart from the source revision (ETag, or mtime plus size).
+- **Connections:** `perform` disconnects its destination (and its source, if `disconnectSource`). Folder copies (`copyItems`) therefore build a fresh provider pair per file via the injected `makeProvider`, and run files one at a time.
+- **Upload retry:** a failed browser upload is moved to `RetainedUploads/<id>/` so it can be retried.
+- **Background:** `App/TransferBackgroundActivity` watches `records` to hold a UIKit background task and post notifications.
+
+### Archives (`Services/ArchiveManager.swift`, app only)
+
+- **Backends:** ZIP uses ZIPFoundation. RAR, TAR and TAR+gzip stream through libarchive-swift. The bundled libarchive binary links only zlib (no liblzma or bzip2), so 7z (LZMA/LZMA2 by default, header included), tar.bz2/tar.xz and single-file gz/bz2/xz decode in memory with SWCompression, bounded by the `maxLegacy*` limits. 7z falls back to libarchive for methods SWCompression lacks (PPMd, BCJ) and for archives over the in-memory limit.
+- **Safety:** entry paths are validated before anything is written, links are never materialized, and the entry count, per-file size, total size and free space are checked up front.
+- **Extract Here** (`RemoteArchiveService`): file protocols cannot extract server-side, so the archive is downloaded, extracted on the device and uploaded next to itself without overwriting, reporting download / extract / upload progress. Offline extraction (`OfflineStore.extractArchive`) keeps the archive's folder structure.
+
+### File Provider extension
+
+- **Domains:** one File Provider domain per connection profile (domain identifier = profile UUID), kept in sync by `Services/FileProviderDomainManager`. Profiles are mirrored into the app group with `FileProviderProfileStore`, because the extension can't read the app's `ConnectionStore`.
+- **Item identifiers:** `path:<base64url(path)>`. `FileProviderIdentityStore` persists overrides (`item:<uuid>`) so items moved by the extension keep their identity.
+  - The app must only use the read-only `knownIdentifier(for:codec:)`. Writing identity state from the app would race with the extension.
+- **Change tracking:** `FileProviderSnapshotStore` saves per-container fingerprints; `enumerateChanges` diffs against them.
+- **Connections:** `FileProviderConnectionPool` shares SFTP/SMB/WebDAV providers across requests (60 s idle eviction, rebuilt when the credential changes). FTP/NFS get a new connection per request.
+- **Errors:** everything returned to the Files app goes through `FileProviderErrorMapping.map`.
+- **Special containers:** `.workingSet` and `.trashContainer` use `FileProviderEmptyEnumerator`.
+
+### UI
+
+- **Environment objects:** `RemoteFilesApp` provides `ConnectionStore`, `TransferEngine`, `OfflineStore` and `FileOperationClipboard`.
+- **Browser:** `BrowserViewModel` owns one provider per browser screen.
+  - A `listGeneration` counter discards directory listings that finished after the user moved on.
+  - Changes made in the app call `FileProviderDomainManager.signalChange` so the Files app refreshes.
+- **Editors:** `RemoteEditorView` and `LocalTextEditorView` keep the file's original encoding (`TextEncoding`, which includes GB18030). Remote saves go through `RemoteFileOperations.replaceFile` (staged upload plus rename).
+- **Media preview:** all audio and video plays in libmpv (MPVKit) via `MPVPlayerView`; there is no AVFoundation player. Subtitles are off; the preview is kept simple.
+  - `MPVPlayer` registers a `remotefiles://` stream protocol. Its callbacks read through `RemoteByteStream` (blocking range reads on mpv's demux thread), and read-ahead stays in memory.
+  - FTP/FTPS never stream, because every range needs a new connection. Those files are downloaded into `CacheManager` first, then played locally.
+  - Audio keeps playing in the background (`UIBackgroundModes: audio` in `RemoteFiles/Info.plist`). In the background video is switched off (`vid=no`), and `MPVPlayer` publishes Now Playing info and handles remote commands and audio-session interruptions.
+  - MPVKit's MoltenVK context reads the layer size (bounds × contentsScale, not `drawableSize`) only when video starts, and ignores later resizes such as rotation. So video starts disabled (`vid=no`). Once the track list gives the video dimensions, the layer's bounds are set to the video's pixel size and never change again. Fitting the layer to the screen then uses only a scale transform (`MPVPlayer.layout`).
