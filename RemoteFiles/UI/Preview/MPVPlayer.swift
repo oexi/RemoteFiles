@@ -1,5 +1,6 @@
 import AVFoundation
 import Libmpv
+import MediaPlayer
 import QuartzCore
 import UniformTypeIdentifiers
 
@@ -55,7 +56,10 @@ final class MPVPlayer: ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private let media: Media
+    private let title: String
     private var core: MPVCore?
+    private var remoteCommandTargets: [(command: MPRemoteCommand, target: Any)] = []
+    private var interruptionObserver: NSObjectProtocol?
     private var backgrounded = false
     private var containerBounds: CGRect = .zero
     private var displayScale: CGFloat = 2
@@ -63,14 +67,23 @@ final class MPVPlayer: ObservableObject {
     /// Pixel size of the layer once video has started; it never changes afterwards.
     private var videoPixelSize: CGSize?
 
-    init(media: Media) {
+    init(media: Media, title: String) {
         self.media = media
+        self.title = title
         layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         layer.framebufferOnly = true
     }
 
     deinit {
         core?.destroy()
+        for (command, target) in remoteCommandTargets {
+            command.removeTarget(target)
+        }
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     /// Fits `layer` into the hosting view. Before video starts the layer fills the view.
@@ -128,7 +141,22 @@ final class MPVPlayer: ObservableObject {
             return
         }
         self.core = core
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+        setUpRemoteCommands()
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] notification in
+            let info = notification.userInfo
+            let type = (info?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
+            let options = AVAudioSession.InterruptionOptions(rawValue: info?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
+            MainActor.assumeIsolated {
+                self?.handleInterruption(type, shouldResume: options.contains(.shouldResume))
+            }
+        }
         core.command(["loadfile", target, "replace"])
     }
 
@@ -139,6 +167,13 @@ final class MPVPlayer: ObservableObject {
         core?.setProperty("pause", isPaused ? "no" : "yes")
     }
 
+    func play() {
+        if isAtEnd {
+            seek(to: 0)
+        }
+        core?.setProperty("pause", "no")
+    }
+
     func pause() {
         core?.setProperty("pause", "yes")
     }
@@ -147,17 +182,18 @@ final class MPVPlayer: ObservableObject {
         let target = max(0, duration > 0 ? min(seconds, duration) : seconds)
         position = target
         core?.command(["seek", String(target), "absolute"])
+        updateNowPlaying()
     }
 
     func skip(by seconds: Double) {
         seek(to: position + seconds)
     }
 
-    /// MoltenVK loses its surface in the background; drop video until the app returns.
+    /// Audio keeps playing in the background. MoltenVK loses its surface there, so video
+    /// is switched off (which also saves decoding) until the app returns.
     func enterBackground() {
         guard hasVideo, !backgrounded else { return }
         backgrounded = true
-        pause()
         core?.setProperty("vid", "no")
     }
 
@@ -171,8 +207,10 @@ final class MPVPlayer: ObservableObject {
         switch event {
         case .flag("pause", let value):
             isPaused = value
+            updateNowPlaying()
         case .flag("paused-for-cache", let value), .flag("seeking", let value):
             isBuffering = value
+            if !value { updateNowPlaying() }
         case .flag("eof-reached", let value):
             isAtEnd = value
         case .double("time-pos", let value):
@@ -180,18 +218,83 @@ final class MPVPlayer: ObservableObject {
             if abs(value - position) >= 0.25 || value < position { position = value }
         case .double("duration", let value):
             duration = value
+            updateNowPlaying()
         case .string("track-list", let json):
             let tracks = (try? JSONDecoder().decode([Track].self, from: Data(json.utf8))) ?? []
             startVideoIfNeeded(tracks)
         case .fileLoaded:
             isLoaded = true
             isBuffering = false
+            updateNowPlaying()
         case .failed(let message):
             isBuffering = false
             errorMessage = message
         default:
             break
         }
+    }
+
+    // MARK: - Lock screen and Control Center
+
+    private var pausedByInterruption = false
+
+    /// A call or another app took the audio session; resume afterwards if the system says so.
+    private func handleInterruption(_ type: AVAudioSession.InterruptionType?, shouldResume: Bool) {
+        switch type {
+        case .began:
+            pausedByInterruption = !isPaused
+            pause()
+        case .ended:
+            if pausedByInterruption, shouldResume {
+                try? AVAudioSession.sharedInstance().setActive(true)
+                play()
+            }
+            pausedByInterruption = false
+        default:
+            break
+        }
+    }
+
+    private func setUpRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+        func add(_ command: MPRemoteCommand, _ action: @escaping @MainActor (MPRemoteCommandEvent) -> Bool) {
+            command.isEnabled = true
+            let target = command.addTarget { event in
+                // Remote command handlers run on the main thread.
+                MainActor.assumeIsolated { action(event) } ? .success : .commandFailed
+            }
+            remoteCommandTargets.append((command, target))
+        }
+        add(center.playCommand) { [weak self] _ in self?.play(); return self != nil }
+        add(center.pauseCommand) { [weak self] _ in self?.pause(); return self != nil }
+        add(center.togglePlayPauseCommand) { [weak self] _ in self?.togglePause(); return self != nil }
+        center.skipBackwardCommand.preferredIntervals = [10]
+        center.skipForwardCommand.preferredIntervals = [10]
+        add(center.skipBackwardCommand) { [weak self] _ in self?.skip(by: -10); return self != nil }
+        add(center.skipForwardCommand) { [weak self] _ in self?.skip(by: 10); return self != nil }
+        add(center.changePlaybackPositionCommand) { [weak self] event in
+            guard let self, let event = event as? MPChangePlaybackPositionCommandEvent else { return false }
+            seek(to: event.positionTime)
+            return true
+        }
+    }
+
+    /// The system extrapolates the elapsed time from the rate, so this only needs to run
+    /// when playback starts, stops or jumps.
+    private func updateNowPlaying() {
+        guard core != nil else { return }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: title,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
+            MPNowPlayingInfoPropertyPlaybackRate: isPaused || isBuffering ? 0.0 : 1.0,
+            MPNowPlayingInfoPropertyMediaType: hasVideo
+                ? MPNowPlayingInfoMediaType.video.rawValue
+                : MPNowPlayingInfoMediaType.audio.rawValue
+        ]
+        if duration > 0 {
+            info[MPMediaItemPropertyPlaybackDuration] = duration
+        }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     /// Video starts disabled (`vid=no`), so the layer can be given the video's own aspect

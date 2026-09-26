@@ -15,7 +15,7 @@ struct MPVPlayerView: View {
 
     init(media: MPVPlayer.Media, title: String) {
         self.title = title
-        _player = StateObject(wrappedValue: MPVPlayer(media: media))
+        _player = StateObject(wrappedValue: MPVPlayer(media: media, title: title))
     }
 
     var body: some View {

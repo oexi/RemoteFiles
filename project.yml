@@ -75,7 +75,8 @@ targets:
       - path: RemoteFiles/Resources
     settings:
       base:
-        # Holds only keys that have no INFOPLIST_KEY_ build setting (NSBonjourServices);
+        # Holds only keys that have no INFOPLIST_KEY_ build setting (NSBonjourServices,
+        # UIBackgroundModes for audio that keeps playing in the background);
         # Xcode merges it with the generated Info.plist.
         INFOPLIST_FILE: RemoteFiles/Info.plist
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: RemoteFiles looks for file servers on your local network so you can add them quickly.
