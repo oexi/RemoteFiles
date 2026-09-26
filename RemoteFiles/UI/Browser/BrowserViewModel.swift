@@ -2,6 +2,8 @@ import Foundation
 import Combine
 
 enum UploadConflictResolution: Equatable, Sendable {
+    /// Overwrites an existing file, or merges an uploaded folder into an
+    /// existing folder of the same name.
     case replace
     case keepBoth
     case skip
@@ -11,7 +13,16 @@ enum UploadConflictResolution: Equatable, Sendable {
 struct UploadConflict: Identifiable, Equatable {
     let id = UUID()
     let name: String
+    /// Whether the item being uploaded is a folder.
+    let isFolder: Bool
     let existingIsFolder: Bool
+    /// Whether more items of the same kind are still to be uploaded in this
+    /// batch, so an "… All" answer means something.
+    let canApplyToAll: Bool
+
+    /// Replace (or merge, for two folders) only makes sense between items of
+    /// the same kind; a file never replaces a folder or the other way round.
+    var canReplace: Bool { isFolder == existingIsFolder }
 }
 
 @MainActor
@@ -20,7 +31,7 @@ final class BrowserViewModel: ObservableObject {
     @Published private(set) var items: [RemoteItem] = []
     @Published private(set) var currentPath: String
     @Published private(set) var loading = false
-    @Published private(set) var uploading = false
+    @Published private var activeUploads = 0
     @Published var errorMessage: String?
     @Published private(set) var pendingUploadConflict: UploadConflict?
 
@@ -30,6 +41,11 @@ final class BrowserViewModel: ObservableObject {
     private var listGeneration = 0
     private let makeProvider: (ConnectionProfile) throws -> any RemoteFileProvider
     private var conflictContinuation: CheckedContinuation<(resolution: UploadConflictResolution, applyToAll: Bool), Never>?
+    /// Uploads started while another one is asking about a conflict wait here
+    /// for their turn, so no prompt (and no waiting upload) is ever dropped.
+    private var conflictPromptBusy = false
+    private var conflictPromptWaiters: [CheckedContinuation<Void, Never>] = []
+    private var lastConflictAnsweredAt: ContinuousClock.Instant?
 
     init(
         profile: ConnectionProfile,
@@ -42,6 +58,7 @@ final class BrowserViewModel: ObservableObject {
     }
 
     var capabilities: ProviderCapabilities { provider?.capabilities ?? .readOnly }
+    var uploading: Bool { activeUploads > 0 }
     var canGoUp: Bool { currentPath != "/" }
 
     func start() async {
@@ -259,31 +276,45 @@ final class BrowserViewModel: ObservableObject {
 
     func upload(localURLs: [URL], transfers: TransferEngine) async {
         guard let provider else { return }
-        uploading = true
-        defer { uploading = false }
+        activeUploads += 1
+        defer { activeUploads -= 1 }
 
         let stagingRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("RemoteFilesImports", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let targetDirectory = currentPath
         var batch = UploadBatch()
+        transfers.beginBatch()
+        defer { transfers.endBatch() }
 
         do {
             try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: stagingRoot) }
 
-            for url in localURLs {
-                let stagedURL = try await Task.detached(priority: .userInitiated) {
-                    try Self.stageImportedURL(url, under: stagingRoot)
-                }.value
-                try await uploadRecursively(
-                    localURL: stagedURL,
+            let staged = try await Task.detached(priority: .userInitiated) {
+                try localURLs.map { try Self.stageImportedURL($0, under: stagingRoot) }
+            }.value
+            let counts = try await Task.detached(priority: .userInitiated) {
+                try Self.entryCounts(staged)
+            }.value
+            batch.pendingFiles = counts.files
+            batch.pendingFolders = counts.folders
+
+            // Every question is asked and every folder created first, so the
+            // files can then be sent several at a time without prompts
+            // interrupting the transfers.
+            var contents: RemoteFolderContents? = try await folderContents(at: targetDirectory, provider: provider)
+            for url in staged {
+                try Task.checkCancellation()
+                try await planUpload(
+                    localURL: url,
                     remoteParent: targetDirectory,
+                    parentContents: &contents,
                     provider: provider,
-                    transfers: transfers,
                     batch: &batch
                 )
             }
+            batch.failedFiles = try await performUploads(batch.uploads, provider: provider, transfers: transfers)
         } catch is CancellationError {
         } catch {
             errorMessage = error.localizedDescription
@@ -302,7 +333,16 @@ final class BrowserViewModel: ObservableObject {
         guard let continuation = conflictContinuation else { return }
         conflictContinuation = nil
         pendingUploadConflict = nil
+        lastConflictAnsweredAt = ContinuousClock.now
         continuation.resume(returning: (resolution, applyToAll))
+    }
+
+    /// Called when the prompt for `id` was dismissed without a button (for
+    /// example by tapping outside it). A dismissal that arrives after the
+    /// prompt was answered, or after the next prompt replaced it, is ignored.
+    func dismissUploadConflict(id: UploadConflict.ID) {
+        guard pendingUploadConflict?.id == id else { return }
+        resolveUploadConflict(.stop, applyToAll: false)
     }
 
     func stop() async {
@@ -348,90 +388,221 @@ final class BrowserViewModel: ObservableObject {
     }
 
     private struct UploadBatch {
-        var rememberedResolution: UploadConflictResolution?
+        var fileResolution: UploadConflictResolution?
+        var folderResolution: UploadConflictResolution?
+        /// Files and folders not handled yet that could still meet a name
+        /// conflict. Items inside a folder this upload creates cannot.
+        var pendingFiles = 0
+        var pendingFolders = 0
+        var uploads: [PlannedUpload] = []
         var failedFiles = 0
+
+        mutating func discount(_ counts: (files: Int, folders: Int)) {
+            pendingFiles = max(0, pendingFiles - counts.files)
+            pendingFolders = max(0, pendingFolders - counts.folders)
+        }
     }
 
-    private func uploadRecursively(
+    /// The items of a destination folder, listed once per folder instead of
+    /// one stat per uploaded item. `nil` stands for a folder this upload just
+    /// created, where nothing can conflict.
+    private struct RemoteFolderContents {
+        private var items: [String: RemoteItem] = [:]
+        private var lowercasedNames: Set<String> = []
+
+        init(_ listed: [RemoteItem]) {
+            for item in listed { insert(item) }
+        }
+
+        func item(named name: String) -> RemoteItem? { items[name] }
+
+        func mayContain(caseInsensitive name: String) -> Bool {
+            lowercasedNames.contains(name.lowercased())
+        }
+
+        mutating func insert(_ item: RemoteItem) {
+            items[item.name] = item
+            lowercasedNames.insert(item.name.lowercased())
+        }
+    }
+
+    private struct PlannedUpload: Sendable {
+        let localURL: URL
+        let remotePath: String
+        let overwrite: Bool
+    }
+
+    /// Resolves the name conflicts for `localURL` and creates its folders;
+    /// files are only queued in `batch.uploads`.
+    private func planUpload(
         localURL: URL,
         remoteParent: String,
+        parentContents: inout RemoteFolderContents?,
         provider: any RemoteFileProvider,
-        transfers: TransferEngine,
         batch: inout UploadBatch
     ) async throws {
-        let values = try localURL.resourceValues(forKeys: [.isDirectoryKey])
-        var remotePath = RemotePath.join(remoteParent, localURL.lastPathComponent)
-        if values.isDirectory == true {
-            // Existing folders are merged; name conflicts are resolved per file.
-            do {
-                try await provider.createDirectory(path: remotePath)
-            } catch {
-                let existing = try? await provider.attributes(path: remotePath)
-                guard existing?.isDirectory == true else { throw error }
-            }
-            let children = try FileManager.default.contentsOfDirectory(
-                at: localURL,
-                includingPropertiesForKeys: [.isDirectoryKey]
-            )
-            for child in children {
-                try Task.checkCancellation()
-                try await uploadRecursively(
-                    localURL: child,
-                    remoteParent: remotePath,
-                    provider: provider,
-                    transfers: transfers,
-                    batch: &batch
-                )
-            }
-            return
+        let isFolder = try localURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+        let name = localURL.lastPathComponent
+        var remotePath = RemotePath.join(remoteParent, name)
+        if isFolder {
+            batch.pendingFolders = max(0, batch.pendingFolders - 1)
+        } else {
+            batch.pendingFiles = max(0, batch.pendingFiles - 1)
         }
 
         var overwrite = false
-        if let existing = try await existingItem(at: remotePath, provider: provider) {
-            let resolution: UploadConflictResolution
-            if let remembered = batch.rememberedResolution {
-                resolution = remembered
-            } else {
-                let answer = await askForConflictResolution(
-                    UploadConflict(name: localURL.lastPathComponent, existingIsFolder: existing.isDirectory)
-                )
-                resolution = answer.resolution
-                if answer.applyToAll { batch.rememberedResolution = resolution }
-            }
-            switch resolution {
+        var merge = false
+        if let existing = try await existingItem(
+            named: name,
+            in: parentContents,
+            parent: remoteParent,
+            provider: provider
+        ) {
+            switch await conflictResolution(for: name, isFolder: isFolder, existing: existing, batch: &batch) {
             case .stop:
                 throw CancellationError()
             case .skip:
+                if isFolder {
+                    let skipped = try await Self.descendantCounts(of: localURL)
+                    batch.discount(skipped)
+                }
                 return
             case .keepBoth:
                 remotePath = try await RemoteFileOperations.availablePastePath(
-                    for: RemoteItem(name: localURL.lastPathComponent, path: remotePath, kind: .file),
+                    for: RemoteItem(name: name, path: remotePath, kind: isFolder ? .directory : .file),
                     in: remoteParent,
                     provider: provider
                 )
             case .replace:
-                guard !existing.isDirectory else {
-                    throw RemoteProviderError.conflict("A folder named \(existing.name) already exists and cannot be replaced by a file.")
-                }
-                overwrite = true
+                if isFolder { merge = true } else { overwrite = true }
             }
         }
 
-        do {
-            try await transfers.uploadFile(
-                localURL: localURL,
-                to: provider,
-                destinationPath: remotePath,
-                overwrite: overwrite,
-                retainForRetry: true
-            )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            // Keep going with the rest of the batch; the failed file stays in
-            // the transfer list with a Retry action.
-            batch.failedFiles += 1
+        guard isFolder else {
+            batch.uploads.append(PlannedUpload(localURL: localURL, remotePath: remotePath, overwrite: overwrite))
+            // A second picked item with the same name now meets this one.
+            parentContents?.insert(RemoteItem(name: (remotePath as NSString).lastPathComponent, path: remotePath, kind: .file))
+            return
         }
+
+        var contents: RemoteFolderContents?
+        if merge {
+            contents = try await folderContents(at: remotePath, provider: provider)
+        } else {
+            var created = false
+            do {
+                try await provider.createDirectory(path: remotePath)
+                created = true
+            } catch {
+                // The folder appeared since the listing (or the listing missed
+                // it): merge into it, asking about files that already exist.
+                let existing = try? await provider.attributes(path: remotePath)
+                guard existing?.isDirectory == true else { throw error }
+                contents = try await folderContents(at: remotePath, provider: provider)
+            }
+            if created {
+                // Nothing inside a new folder can conflict.
+                let unconflicted = try await Self.descendantCounts(of: localURL)
+                batch.discount(unconflicted)
+            }
+            parentContents?.insert(RemoteItem(name: (remotePath as NSString).lastPathComponent, path: remotePath, kind: .directory))
+        }
+
+        let children = try FileManager.default.contentsOfDirectory(
+            at: localURL,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        )
+        for child in children {
+            try Task.checkCancellation()
+            try await planUpload(
+                localURL: child,
+                remoteParent: remotePath,
+                parentContents: &contents,
+                provider: provider,
+                batch: &batch
+            )
+        }
+    }
+
+    /// Sends the planned files, a few at a time on protocols whose provider
+    /// handles concurrent requests on one connection. Returns how many
+    /// failed; those stay in the transfer list with a Retry action.
+    private func performUploads(
+        _ uploads: [PlannedUpload],
+        provider: any RemoteFileProvider,
+        transfers: TransferEngine
+    ) async throws -> Int {
+        enum Outcome: Sendable { case uploaded, failed, cancelled }
+        let limit = Self.uploadConcurrency(for: profile.protocolType)
+        var failed = 0
+        try await withThrowingTaskGroup(of: Outcome.self) { group in
+            var next = 0
+            var running = 0
+            while true {
+                while next < uploads.count, running < limit {
+                    let upload = uploads[next]
+                    next += 1
+                    running += 1
+                    group.addTask {
+                        do {
+                            try await transfers.uploadFile(
+                                localURL: upload.localURL,
+                                to: provider,
+                                destinationPath: upload.remotePath,
+                                overwrite: upload.overwrite,
+                                retainForRetry: true
+                            )
+                            return .uploaded
+                        } catch is CancellationError {
+                            return .cancelled
+                        } catch {
+                            return .failed
+                        }
+                    }
+                }
+                guard let outcome = try await group.next() else { break }
+                running -= 1
+                switch outcome {
+                case .uploaded: break
+                case .failed: failed += 1
+                case .cancelled: throw CancellationError()
+                }
+            }
+        }
+        return failed
+    }
+
+    static func uploadConcurrency(for protocolType: RemoteProtocol) -> Int {
+        switch protocolType {
+        case .sftp, .webdav:
+            // These providers multiplex concurrent requests over one session.
+            return 3
+        case .smb:
+            // SMBClient exchanges one request at a time per connection, so
+            // parallel uploads gain nothing. Before oexi/SMBClient#1 they
+            // also made the server drop the connection.
+            return 1
+        case .ftp, .ftps, .nfs:
+            return 1
+        }
+    }
+
+    private func folderContents(at path: String, provider: any RemoteFileProvider) async throws -> RemoteFolderContents {
+        RemoteFolderContents(try await provider.list(path: path))
+    }
+
+    private func existingItem(
+        named name: String,
+        in contents: RemoteFolderContents?,
+        parent: String,
+        provider: any RemoteFileProvider
+    ) async throws -> RemoteItem? {
+        guard let contents else { return nil }
+        if let item = contents.item(named: name) { return item }
+        // Case-insensitive servers (SMB, most NAS shares) treat "A.txt" and
+        // "a.txt" as one name; only the server can tell whether they clash.
+        guard contents.mayContain(caseInsensitive: name) else { return nil }
+        return try await existingItem(at: RemotePath.join(parent, name), provider: provider)
     }
 
     private func existingItem(at path: String, provider: any RemoteFileProvider) async throws -> RemoteItem? {
@@ -443,13 +614,101 @@ final class BrowserViewModel: ObservableObject {
         }
     }
 
+    private func conflictResolution(
+        for name: String,
+        isFolder: Bool,
+        existing: RemoteItem,
+        batch: inout UploadBatch
+    ) async -> UploadConflictResolution {
+        let conflict = UploadConflict(
+            name: name,
+            isFolder: isFolder,
+            existingIsFolder: existing.isDirectory,
+            canApplyToAll: isFolder ? batch.pendingFolders > 0 : batch.pendingFiles > 0
+        )
+        // An "… All" answer is reused only where it applies: "Replace All"
+        // for files does not decide a file that meets a folder.
+        let remembered = isFolder ? batch.folderResolution : batch.fileResolution
+        if let remembered, remembered != .replace || conflict.canReplace {
+            return remembered
+        }
+        let answer = await askForConflictResolution(conflict)
+        if answer.applyToAll {
+            if isFolder { batch.folderResolution = answer.resolution } else { batch.fileResolution = answer.resolution }
+        }
+        return answer.resolution
+    }
+
     private func askForConflictResolution(
         _ conflict: UploadConflict
     ) async -> (resolution: UploadConflictResolution, applyToAll: Bool) {
-        await withCheckedContinuation { continuation in
+        if conflictPromptBusy {
+            await withCheckedContinuation { conflictPromptWaiters.append($0) }
+        } else {
+            conflictPromptBusy = true
+        }
+        defer {
+            if conflictPromptWaiters.isEmpty {
+                conflictPromptBusy = false
+            } else {
+                conflictPromptWaiters.removeFirst().resume()
+            }
+        }
+        // SwiftUI drops a dialog that is presented while the previous one is
+        // still animating away, which left the upload waiting for an answer
+        // to a prompt nobody could see. Give the last one time to go.
+        if let lastConflictAnsweredAt {
+            let settle = Duration.milliseconds(500) - (ContinuousClock.now - lastConflictAnsweredAt)
+            if settle > .zero { try? await Task.sleep(for: settle) }
+        }
+        return await withCheckedContinuation { continuation in
             conflictContinuation = continuation
             pendingUploadConflict = conflict
         }
+    }
+
+    private nonisolated static func entryCounts(_ urls: [URL]) throws -> (files: Int, folders: Int) {
+        var files = 0
+        var folders = 0
+        for url in urls {
+            if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
+                let below = try descendantCountsSync(of: url)
+                files += below.files
+                folders += below.folders + 1
+            } else {
+                files += 1
+            }
+        }
+        return (files, folders)
+    }
+
+    private nonisolated static func descendantCounts(of folder: URL) async throws -> (files: Int, folders: Int) {
+        try await Task.detached(priority: .userInitiated) {
+            try descendantCountsSync(of: folder)
+        }.value
+    }
+
+    private nonisolated static func descendantCountsSync(of folder: URL) throws -> (files: Int, folders: Int) {
+        var files = 0
+        var folders = 0
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else { return (0, 0) }
+        for case let url as URL in enumerator {
+            if try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true {
+                folders += 1
+            } else {
+                files += 1
+            }
+        }
+        return (files, folders)
+    }
+
+    private nonisolated static func isAppTemporaryFile(_ url: URL) -> Bool {
+        let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL.path
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return path.hasPrefix(temporary.hasSuffix("/") ? temporary : temporary + "/")
     }
 
     private nonisolated static func stageImportedURL(_ sourceURL: URL, under stagingRoot: URL) throws -> URL {
@@ -461,6 +720,14 @@ final class BrowserViewModel: ObservableObject {
         let container = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
         let destination = container.appendingPathComponent(sourceURL.lastPathComponent)
+
+        // "Upload Files" opens the picker in copy mode, which already put a
+        // private copy in the app's temporary folder. Take that copy over
+        // instead of duplicating a possibly large file before uploading.
+        if isAppTemporaryFile(sourceURL) {
+            try FileManager.default.moveItem(at: sourceURL, to: destination)
+            return destination
+        }
 
         var coordinationError: NSError?
         var copyError: Error?

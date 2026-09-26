@@ -10,7 +10,13 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     private let provider: FTPFileProvider
-    private var chmodSupported = false
+    // Set by `connect()` while other tasks may already read it.
+    private let chmodLock = NSLock()
+    private var chmodSupportedValue = false
+    private var chmodSupported: Bool {
+        get { chmodLock.withLock { chmodSupportedValue } }
+        set { chmodLock.withLock { chmodSupportedValue = newValue } }
+    }
 
     init(profile: ConnectionProfile, credential: Credential?) throws {
         self.profile = profile
@@ -92,14 +98,9 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
             return try await rootAttributes(path: normalized)
         }
 
-        // FilesProvider's MLST/LIST response uses a generic bad-server-response
-        // error for a missing item. Listing the parent gives us an affirmative
-        // existence check without guessing whether that error means "missing"
-        // or a permission/transport failure. Any parent-list error propagates.
-        let parentItems = try await list(path: RemotePath.parent(normalized))
-        guard let item = Self.findItem(at: normalized, in: parentItems) else {
-            throw RemoteProviderError.notFound("The remote item was not found at \(normalized).")
-        }
+        let item = try await listedItem(at: normalized)
+        // FilesProvider drops the mode bits from LIST/MLSD, so they cost a
+        // STAT round trip; internal existence checks use `listedItem`.
         let permissions = chmodSupported
             ? (try? await unixPermissions(path: normalized))
             : item.permissions
@@ -115,6 +116,18 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
             permissions: permissions ?? item.permissions,
             revision: item.revision
         )
+    }
+
+    /// FilesProvider's MLST/LIST response uses a generic bad-server-response
+    /// error for a missing item. Listing the parent gives us an affirmative
+    /// existence check without guessing whether that error means "missing"
+    /// or a permission/transport failure. Any parent-list error propagates.
+    private func listedItem(at normalized: String) async throws -> RemoteItem {
+        let parentItems = try await list(path: RemotePath.parent(normalized))
+        guard let item = Self.findItem(at: normalized, in: parentItems) else {
+            throw RemoteProviderError.notFound("The remote item was not found at \(normalized).")
+        }
+        return item
     }
 
     private func rootAttributes(path: String) async throws -> RemoteItem {
@@ -261,8 +274,10 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     private func existingItem(at path: String) async throws -> RemoteItem? {
+        let normalized = RemotePath.normalize(path)
         do {
-            return try await attributes(path: path)
+            if normalized == "/" { return try await rootAttributes(path: normalized) }
+            return try await listedItem(at: normalized)
         } catch {
             guard RemoteProviderError.isNotFound(error) else { throw error }
             return nil

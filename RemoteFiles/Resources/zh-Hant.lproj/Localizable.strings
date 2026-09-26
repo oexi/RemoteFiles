@@ -148,6 +148,9 @@
 "Skip All" = "全部略過";
 "Stop Upload" = "停止上傳";
 "“%@” already exists in this folder." = "此資料夾中已存在「%@」。";
+"Merge" = "合併";
+"Merge All" = "全部合併";
+"A folder named “%@” already exists in this folder. Merging puts the uploaded items into it; files with the same name are handled separately." = "此資料夾中已存在名為「%@」的資料夾。合併會把上傳的內容放入該資料夾，同名檔案會另行處理。";
 "%lld file(s) could not be uploaded. Retry them from Transfers." = "%lld 個檔案上傳失敗，可在「傳輸」中重試。";
 "Some items were not copied. See Transfers for details and to retry them." = "部分項目未能複製。請在「傳輸」中查看詳情並重試。";
 "Back" = "返回";
@@ -159,6 +162,10 @@
 "iOS suspended RemoteFiles. Open the app to resume or retry unfinished transfers." = "iOS 已暫停 RemoteFiles。開啟 App 以繼續或重試未完成的傳輸。";
 "Transfer complete" = "傳輸完成";
 "Transfer failed" = "傳輸失敗";
+"Transfers complete" = "傳輸全部完成";
+"Transfers finished" = "傳輸已結束";
+"%lld transfers completed." = "已完成 %lld 個傳輸。";
+"%lld completed, %lld failed. See Transfers for details." = "%lld 個完成，%lld 個失敗。請在「傳輸」中查看詳情。";
 "Import SSH Private Key" = "匯入 SSH 私鑰";
 "Archive" = "壓縮檔";
 "Archive extracted successfully." = "壓縮檔已解壓縮。";

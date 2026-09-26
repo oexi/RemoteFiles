@@ -224,6 +224,122 @@ final class BrowserUploadConflictTests: XCTestCase {
 }
 
 @MainActor
+final class BrowserFolderUploadConflictTests: XCTestCase {
+    func testSingleFileConflictDoesNotOfferApplyToAll() async throws {
+        let (storage, model, engine, directory) = try await makeModel()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        storage.write("/report.txt", Data("old".utf8))
+        let local = directory.appendingPathComponent("report.txt")
+        try Data("new".utf8).write(to: local)
+
+        let upload = Task { await model.upload(localURLs: [local], transfers: engine) }
+        let conflict = try await waitForConflict(model)
+        XCTAssertFalse(conflict.isFolder)
+        XCTAssertTrue(conflict.canReplace)
+        XCTAssertFalse(conflict.canApplyToAll)
+        model.resolveUploadConflict(.replace, applyToAll: false)
+        await upload.value
+
+        XCTAssertEqual(storage.data("/report.txt"), Data("new".utf8))
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testExistingFolderAsksToMergeThenAsksPerFile() async throws {
+        let (storage, model, engine, directory) = try await makeModel()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        storage.makeDirectory("/Logs")
+        storage.write("/Logs/a.log", Data("old".utf8))
+
+        let folder = directory.appendingPathComponent("Logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("new-a".utf8).write(to: folder.appendingPathComponent("a.log"))
+        try Data("new-b".utf8).write(to: folder.appendingPathComponent("b.log"))
+
+        let upload = Task { await model.upload(localURLs: [folder], transfers: engine) }
+        let folderConflict = try await waitForConflict(model)
+        XCTAssertEqual(folderConflict.name, "Logs")
+        XCTAssertTrue(folderConflict.isFolder)
+        XCTAssertTrue(folderConflict.existingIsFolder)
+        XCTAssertFalse(folderConflict.canApplyToAll)
+        model.resolveUploadConflict(.replace, applyToAll: false)
+
+        let fileConflict = try await waitForConflict(model, after: folderConflict.id)
+        XCTAssertEqual(fileConflict.name, "a.log")
+        model.resolveUploadConflict(.skip, applyToAll: false)
+        await upload.value
+
+        XCTAssertEqual(storage.data("/Logs/a.log"), Data("old".utf8))
+        XCTAssertEqual(storage.data("/Logs/b.log"), Data("new-b".utf8))
+        XCTAssertFalse(storage.exists("/Logs copy"))
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testKeepBothFolderUploadsIntoNewFolderWithoutFurtherPrompts() async throws {
+        let (storage, model, engine, directory) = try await makeModel()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        storage.makeDirectory("/Logs")
+        storage.write("/Logs/a.log", Data("old".utf8))
+
+        let folder = directory.appendingPathComponent("Logs", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("new-a".utf8).write(to: folder.appendingPathComponent("a.log"))
+
+        let upload = Task { await model.upload(localURLs: [folder], transfers: engine) }
+        _ = try await waitForConflict(model)
+        model.resolveUploadConflict(.keepBoth, applyToAll: false)
+        await upload.value
+
+        XCTAssertNil(model.pendingUploadConflict)
+        XCTAssertEqual(storage.data("/Logs/a.log"), Data("old".utf8))
+        XCTAssertEqual(storage.data("/Logs copy/a.log"), Data("new-a".utf8))
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testNewFolderUploadsWithoutPrompting() async throws {
+        let (storage, model, engine, directory) = try await makeModel()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let folder = directory.appendingPathComponent("Fresh", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("1".utf8).write(to: folder.appendingPathComponent("one.txt"))
+        try Data("2".utf8).write(to: folder.appendingPathComponent("two.txt"))
+
+        await model.upload(localURLs: [folder], transfers: engine)
+
+        XCTAssertNil(model.pendingUploadConflict)
+        XCTAssertEqual(storage.data("/Fresh/one.txt"), Data("1".utf8))
+        XCTAssertEqual(storage.data("/Fresh/two.txt"), Data("2".utf8))
+        XCTAssertNil(model.errorMessage)
+    }
+
+    private func makeModel() async throws -> (MemoryRemoteProvider.Storage, BrowserViewModel, TransferEngine, URL) {
+        let storage = MemoryRemoteProvider.Storage()
+        var profile = ConnectionProfile.empty(for: .sftp)
+        profile.initialPath = "/"
+        let provider = MemoryRemoteProvider(profile: profile, storage: storage)
+        let model = BrowserViewModel(profile: profile, makeProvider: { _ in provider })
+        await model.start()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FolderUploadConflict-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let engine = TransferEngine(fileURL: directory.appendingPathComponent("transfers.json"))
+        return (storage, model, engine, directory)
+    }
+
+    private func waitForConflict(
+        _ model: BrowserViewModel,
+        after previous: UploadConflict.ID? = nil
+    ) async throws -> UploadConflict {
+        for _ in 0..<500 {
+            if let conflict = model.pendingUploadConflict, conflict.id != previous { return conflict }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("No upload conflict was presented.")
+        throw CancellationError()
+    }
+}
+
+@MainActor
 final class BrowserSymbolicLinkTests: XCTestCase {
     func testLinkToFolderIsFolderLikeButStaysALink() {
         let link = RemoteItem(name: "var", path: "/var", kind: .symbolicLink, size: 3, linkTargetKind: .directory)
