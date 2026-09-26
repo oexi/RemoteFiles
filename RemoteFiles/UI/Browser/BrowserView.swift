@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct BrowserView: View {
     @EnvironmentObject private var connections: ConnectionStore
@@ -12,6 +13,7 @@ struct BrowserView: View {
     @State private var showingFolderPrompt = false
     @State private var newFolderName = ""
     @State private var uploadPicker = UploadPicker()
+    @State private var showingFolderImporter = false
     @State private var searchText = ""
     @State private var renameItem: RemoteItem?
     @State private var renameText = ""
@@ -78,7 +80,8 @@ struct BrowserView: View {
                                 presentUploadPicker(.files)
                             }
                             Button("Upload Folder", systemImage: "square.and.arrow.up.on.square") {
-                                presentUploadPicker(.folder)
+                                searchFocused = false
+                                showingFolderImporter = true
                             }
                         }
                     } label: { Image(systemName: "ellipsis.circle") }
@@ -201,6 +204,26 @@ struct BrowserView: View {
                 let name = newFolderName
                 newFolderName = ""
                 Task { await model.createFolder(name: name) }
+            }
+        }
+        // Folders use SwiftUI's importer: presented from UIKit, the folder
+        // picker never handed back the folder after Open.
+        .fileImporter(
+            isPresented: $showingFolderImporter,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard !urls.isEmpty else { return }
+                Task {
+                    // Let the importer finish closing before a conflict
+                    // dialog may need the screen.
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    await model.upload(localURLs: urls, transfers: transfers)
+                }
+            case .failure(let error):
+                model.errorMessage = error.localizedDescription
             }
         }
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
