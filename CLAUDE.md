@@ -99,14 +99,10 @@ Consequences:
   - A `listGeneration` counter discards directory listings that finished after the user moved on.
   - Changes made in the app call `FileProviderDomainManager.signalChange` so the Files app refreshes.
 - **Editors:** `RemoteEditorView` and `LocalTextEditorView` keep the file's original encoding (`TextEncoding`, which includes GB18030). Remote saves go through `RemoteFileOperations.replaceFile` (staged upload plus rename).
-- **Media preview:** `RemotePreviewView` tries three paths in order:
-  1. AVFoundation streaming via `RemoteMediaResourceLoader` (MP4, MOV, MP3, …).
-  2. libmpv (MPVKit) for everything else it can play (MKV, AVI, WebM, …). `MPVPlayer` registers a `remotefiles://` stream protocol whose callbacks read through `RemoteByteStream` (blocking range reads on mpv's demux thread); read-ahead stays in memory.
-  3. Otherwise, a full download into `CacheManager`, then QuickLook (or mpv for a local file).
-
-  FTP/FTPS never stream: every range needs a new connection.
-
-  Subtitles use `sub-font-provider=none` plus the bundled `Resources/SubtitleFonts` folder (a folder reference, because libass loads every file in it). CoreText fallback hands libass private system font paths the app cannot open on devices, so CJK text rendered as boxes. The simulator does not show this.
+- **Media preview:** all audio and video plays in libmpv (MPVKit) via `MPVPlayerView`; there is no AVFoundation player. Subtitles are off; the preview is kept simple.
+  - `MPVPlayer` registers a `remotefiles://` stream protocol. Its callbacks read through `RemoteByteStream` (blocking range reads on mpv's demux thread), and read-ahead stays in memory.
+  - FTP/FTPS never stream, because every range needs a new connection. Those files are downloaded into `CacheManager` first, then played locally.
+  - MPVKit's MoltenVK context reads the layer's drawable size only when video starts, and ignores later resizes such as rotation. So video starts disabled (`vid=no`). Once the track list gives the video dimensions, the drawable is fixed to the video's aspect ratio (`MPVMetalLayer.fixedDrawableSize`), and Core Animation scales it with `.resizeAspect`.
 - **Localization:** UI strings live in `Resources/{en,zh-Hans,zh-Hant}.lproj/Localizable.strings`. Add new keys to all three files; zh-Hant uses 資料夾 / 檔案 / 伺服器 terminology.
 
 ## Tests

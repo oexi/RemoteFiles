@@ -21,9 +21,17 @@ final class RemoteByteStreamSource: @unchecked Sendable {
     /// Returns nil when the file cannot be streamed; callers then download it instead.
     convenience init?(provider: any RemoteFileProvider, item: RemoteItem) {
         guard let chunkProvider = provider as? any RemoteChunkReadableProvider,
-              RemoteMediaResourceLoader.protocolSupportsStreaming(provider.profile.protocolType),
+              Self.protocolSupportsStreaming(provider.profile.protocolType),
               let size = item.size, size > 0 else { return nil }
         self.init(provider: chunkProvider, path: item.path, fileName: item.name, size: UInt64(size))
+    }
+
+    /// FTP opens a new control and data connection for every range, which is too slow to stream.
+    static func protocolSupportsStreaming(_ type: RemoteProtocol) -> Bool {
+        switch type {
+        case .sftp, .smb, .webdav, .nfs: true
+        case .ftp, .ftps: false
+        }
     }
 
     func open() -> RemoteByteStream {

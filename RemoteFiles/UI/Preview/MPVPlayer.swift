@@ -3,9 +3,9 @@ import Libmpv
 import QuartzCore
 import UniformTypeIdentifiers
 
-/// Plays media that AVFoundation cannot (MKV, AVI, WebM, …) with libmpv, rendering into
-/// `layer` through MoltenVK. Remote files are read through `RemoteByteStreamSource`,
-/// so playback starts at once and seeks without downloading the whole file.
+/// Plays audio and video with libmpv, rendering into `layer` through MoltenVK. Remote
+/// files are read through `RemoteByteStreamSource`, so playback starts at once and seeks
+/// without downloading the whole file.
 @MainActor
 final class MPVPlayer: ObservableObject {
     enum Media {
@@ -13,20 +13,31 @@ final class MPVPlayer: ObservableObject {
         case local(URL)
     }
 
-    struct Track: Identifiable, Decodable, Equatable {
+    /// The fields of an entry in libmpv's `track-list` that the player needs.
+    struct Track: Decodable, Equatable {
         let id: Int
         let type: String
-        let title: String?
-        let lang: String?
-        let codec: String?
-        let selected: Bool?
         let albumart: Bool?
+        let width: Int?
+        let height: Int?
+        let rotation: Int?
+        let pixelAspect: Double?
 
-        var isSelected: Bool { selected == true }
+        enum CodingKeys: String, CodingKey {
+            case id, type, albumart
+            case width = "demux-w"
+            case height = "demux-h"
+            case rotation = "demux-rotation"
+            case pixelAspect = "demux-par"
+        }
 
-        var displayName: String {
-            let parts = [title, lang?.uppercased(), codec].compactMap { $0?.isEmpty == false ? $0 : nil }
-            return parts.isEmpty ? String(localized: "Track \(id)") : parts.joined(separator: " · ")
+        /// Display size in pixels, after rotation and pixel aspect ratio.
+        var displaySize: CGSize? {
+            guard type == "video", let width, let height, width > 0, height > 0 else { return nil }
+            let displayWidth = Double(width) * (pixelAspect.map { $0 > 0 ? $0 : 1 } ?? 1)
+            let size = CGSize(width: displayWidth, height: Double(height))
+            let quarterTurns = ((rotation ?? 0) / 90) % 2
+            return quarterTurns == 0 ? size : CGSize(width: size.height, height: size.width)
         }
     }
 
@@ -37,26 +48,25 @@ final class MPVPlayer: ObservableObject {
     @Published private(set) var isPaused = false
     @Published private(set) var isBuffering = true
     @Published private(set) var isAtEnd = false
+    @Published private(set) var isLoaded = false
+    @Published private(set) var hasVideo = false
     @Published private(set) var position: Double = 0
     @Published private(set) var duration: Double = 0
-    @Published private(set) var tracks: [Track] = []
     @Published private(set) var errorMessage: String?
-    /// Display aspect ratio (width / height) of the video, once known.
-    @Published private(set) var videoAspect: Double?
 
-    var audioTracks: [Track] { tracks.filter { $0.type == "audio" } }
-    var subtitleTracks: [Track] { tracks.filter { $0.type == "sub" } }
-    var hasVideo: Bool { tracks.contains { $0.type == "video" && $0.albumart != true } }
+    /// Longest side, in pixels, of the drawable video is rendered into. Set by the
+    /// hosting view from the screen size.
+    var maximumDrawableDimension: CGFloat = 2560
 
     private let media: Media
     private var core: MPVCore?
     private var backgrounded = false
-    private var subtitlePosition = 100
 
     init(media: Media) {
         self.media = media
         layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         layer.framebufferOnly = true
+        layer.contentsGravity = .resizeAspect
     }
 
     deinit {
@@ -115,23 +125,9 @@ final class MPVPlayer: ObservableObject {
         seek(to: position + seconds)
     }
 
-    func selectTrack(_ track: Track?, type: String) {
-        let property = type == "sub" ? "sid" : "aid"
-        core?.setProperty(property, track.map { String($0.id) } ?? "no")
-    }
-
-    /// Moves subtitles up, as a percentage of the video height (100 is the default bottom
-    /// position), so they stay above the playback controls.
-    func setSubtitlePosition(_ percent: Int) {
-        let percent = min(100, max(0, percent))
-        guard percent != subtitlePosition else { return }
-        subtitlePosition = percent
-        core?.setProperty("sub-pos", String(percent))
-    }
-
     /// MoltenVK loses its surface in the background; drop video until the app returns.
     func enterBackground() {
-        guard core != nil, !backgrounded else { return }
+        guard hasVideo, !backgrounded else { return }
         backgrounded = true
         pause()
         core?.setProperty("vid", "no")
@@ -156,11 +152,11 @@ final class MPVPlayer: ObservableObject {
             if abs(value - position) >= 0.25 || value < position { position = value }
         case .double("duration", let value):
             duration = value
-        case .double("video-params/aspect", let value):
-            videoAspect = value > 0 ? value : nil
         case .string("track-list", let json):
-            tracks = (try? JSONDecoder().decode([Track].self, from: Data(json.utf8))) ?? []
+            let tracks = (try? JSONDecoder().decode([Track].self, from: Data(json.utf8))) ?? []
+            startVideoIfNeeded(tracks)
         case .fileLoaded:
+            isLoaded = true
             isBuffering = false
         case .failed(let message):
             isBuffering = false
@@ -168,6 +164,28 @@ final class MPVPlayer: ObservableObject {
         default:
             break
         }
+    }
+
+    /// Video starts disabled (`vid=no`). MPVKit's MoltenVK context reads the drawable size
+    /// only when video starts and never follows later resizes such as rotation, so the
+    /// drawable is fixed to the video's own aspect ratio first; Core Animation then scales
+    /// it to fit the layer in any orientation.
+    private func startVideoIfNeeded(_ tracks: [Track]) {
+        guard !hasVideo, let track = tracks.first(where: { $0.type == "video" }) else { return }
+        if let size = track.displaySize {
+            layer.fixedDrawableSize = Self.drawableSize(for: size, maximumDimension: maximumDrawableDimension)
+        }
+        hasVideo = true
+        core?.setProperty("vid", "auto")
+    }
+
+    nonisolated static func drawableSize(for videoSize: CGSize, maximumDimension: CGFloat) -> CGSize {
+        let longest = max(videoSize.width, videoSize.height)
+        let scale = longest > maximumDimension ? maximumDimension / longest : 1
+        return CGSize(
+            width: max(2, (videoSize.width * scale).rounded()),
+            height: max(2, (videoSize.height * scale).rounded())
+        )
     }
 
     // MARK: - Formats
@@ -188,16 +206,6 @@ final class MPVPlayer: ObservableObject {
         return UTType(filenameExtension: ext)?.conforms(to: .audiovisualContent) == true
     }
 
-    /// AVFoundation claims these containers but plays few of the codecs found in them (Xvid, DivX).
-    private nonisolated static let avFoundationUnreliableExtensions: Set<String> = ["avi", "divx"]
-
-    /// Media that libmpv plays but AVFoundation and QuickLook cannot (or only rarely can).
-    nonisolated static func isPreferred(forFileName fileName: String) -> Bool {
-        let ext = (fileName as NSString).pathExtension.lowercased()
-        if avFoundationUnreliableExtensions.contains(ext) { return true }
-        return canPlay(fileName: fileName) && RemoteMediaResourceLoader.playableType(forFileName: fileName) == nil
-    }
-
     nonisolated static func timeString(_ seconds: Double) -> String {
         guard seconds.isFinite else { return "0:00" }
         let total = Int(max(0, seconds).rounded(.down))
@@ -210,13 +218,25 @@ final class MPVPlayer: ObservableObject {
     }
 }
 
-/// Works around MoltenVK shrinking the drawable to 1×1 when it forces a present,
-/// which flickers or leaves the video stuck at that size (mpv-player/mpv#13651).
+/// The layer libmpv renders into through MoltenVK.
 final class MPVMetalLayer: CAMetalLayer {
+    /// When set, the drawable keeps this size whatever the layer's bounds; see
+    /// `MPVPlayer.startVideoIfNeeded`.
+    var fixedDrawableSize: CGSize? {
+        didSet {
+            if let fixedDrawableSize { super.drawableSize = fixedDrawableSize }
+        }
+    }
+
     override var drawableSize: CGSize {
-        get { super.drawableSize }
+        get { fixedDrawableSize ?? super.drawableSize }
         set {
-            if Int(newValue.width) > 1, Int(newValue.height) > 1 {
+            if let fixedDrawableSize {
+                // MoltenVK re-applies the swapchain extent; keep everything else out.
+                if newValue == fixedDrawableSize { super.drawableSize = newValue }
+            } else if Int(newValue.width) > 1, Int(newValue.height) > 1 {
+                // MoltenVK shrinks the drawable to 1×1 to force a present, which
+                // flickers or leaves the video at that size (mpv-player/mpv#13651).
                 super.drawableSize = newValue
             }
         }
@@ -233,9 +253,6 @@ final class MPVCore: @unchecked Sendable {
         case fileLoaded
         case failed(String)
     }
-
-    /// Family name of the bundled `SubtitleFonts/NotoSansSC-Regular.otf`.
-    static let subtitleFontFamily = "Noto Sans SC"
 
     private let queue = DispatchQueue(label: "RemoteFiles.MPV", qos: .userInitiated)
     private let source: RemoteByteStreamSource?
@@ -255,21 +272,15 @@ final class MPVCore: @unchecked Sendable {
             ("gpu-api", "vulkan"),
             ("gpu-context", "moltenvk"),
             ("hwdec", "videotoolbox"),
-            ("video-rotate", "no"),
+            // Video is enabled once its size is known; see MPVPlayer.startVideoIfNeeded.
+            ("vid", "no"),
             ("keep-open", "yes"),
             ("idle", "yes"),
             ("input-default-bindings", "no"),
             ("input-vo-keyboard", "no"),
-            ("subs-match-os-language", "yes"),
-            ("subs-fallback", "yes"),
-            // On devices CoreText falls back to private system fonts (PingFangUI.ttc) that
-            // the app cannot open, so CJK text renders as boxes and stalls rendering.
-            // Use fonts embedded in the file plus a bundled CJK font instead.
-            ("sub-font-provider", "none"),
-            ("sub-font", MPVCore.subtitleFontFamily),
-            // Render text subtitles inside the picture rather than in the black bars,
-            // so they stay clear of the controls.
-            ("sub-use-margins", "no"),
+            // A simple preview: no subtitles.
+            ("sid", "no"),
+            ("sub-auto", "no"),
             // Read ahead in memory only; nothing is cached on disk.
             ("cache", "yes"),
             ("cache-on-disk", "no"),
@@ -278,9 +289,6 @@ final class MPVCore: @unchecked Sendable {
         ]
         for (name, value) in options {
             mpv_set_option_string(handle, name, value)
-        }
-        if let fonts = Bundle.main.url(forResource: "SubtitleFonts", withExtension: nil) {
-            mpv_set_option_string(handle, "sub-fonts-dir", fonts.path)
         }
         #if DEBUG
         mpv_request_log_messages(handle, "warn")
@@ -304,7 +312,6 @@ final class MPVCore: @unchecked Sendable {
         mpv_observe_property(handle, 0, "eof-reached", MPV_FORMAT_FLAG)
         mpv_observe_property(handle, 0, "time-pos", MPV_FORMAT_DOUBLE)
         mpv_observe_property(handle, 0, "duration", MPV_FORMAT_DOUBLE)
-        mpv_observe_property(handle, 0, "video-params/aspect", MPV_FORMAT_DOUBLE)
         // Node properties formatted as strings come back as JSON.
         mpv_observe_property(handle, 0, "track-list", MPV_FORMAT_STRING)
 

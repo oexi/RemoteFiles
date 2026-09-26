@@ -228,11 +228,6 @@
 "Play" = "播放";
 "Skip Back 10 Seconds" = "倒轉 10 秒";
 "Skip Forward 10 Seconds" = "快轉 10 秒";
-"Audio" = "音訊";
-"Subtitles" = "字幕";
-"Off" = "關閉";
-"Audio and Subtitles" = "音訊和字幕";
-"Track %lld" = "軌道 %lld";
 "The video player could not be started." = "無法啟動影片播放器。";
 "The file could not be played (%@)." = "無法播放此檔案（%@）。";
 "Playback Position" = "播放進度";

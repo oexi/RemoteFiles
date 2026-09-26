@@ -1,8 +1,7 @@
-import AVFoundation
 import SwiftUI
 import UIKit
 
-/// Full-screen player for media that only libmpv can play.
+/// Full-screen audio and video preview, played with libmpv.
 struct MPVPlayerView: View {
     @StateObject private var player: MPVPlayer
     @Environment(\.scenePhase) private var scenePhase
@@ -10,10 +9,6 @@ struct MPVPlayerView: View {
     @State private var controlsVisible = true
     @State private var scrubPosition: Double?
     @State private var lastInteraction = Date()
-    @State private var surfaceFrame: CGRect = .zero
-    @State private var timelineTop: CGFloat?
-
-    private static let coordinateSpace = "MPVPlayerView"
 
     init(media: MPVPlayer.Media) {
         _player = StateObject(wrappedValue: MPVPlayer(media: media))
@@ -22,17 +17,11 @@ struct MPVPlayerView: View {
     var body: some View {
         content
             .playbackChrome(visible: controlsVisible || player.errorMessage != nil)
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) { trackMenu }
-            }
             .task(id: AutoHideKey(visible: controlsVisible, paused: player.isPaused, scrubbing: scrubPosition != nil, interaction: lastInteraction)) {
                 guard controlsVisible, !player.isPaused, scrubPosition == nil else { return }
                 try? await Task.sleep(for: .seconds(3))
                 guard !Task.isCancelled else { return }
                 withAnimation(.easeInOut(duration: 0.25)) { controlsVisible = false }
-            }
-            .onChange(of: subtitleLayout) { _, layout in
-                player.setSubtitlePosition(layout.position)
             }
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
@@ -49,9 +38,6 @@ struct MPVPlayerView: View {
             Color.black.ignoresSafeArea()
             MPVVideoSurface(player: player)
                 .ignoresSafeArea()
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.coordinateSpace)) } action: { frame in
-                    surfaceFrame = frame
-                }
             if let message = player.errorMessage {
                 ContentUnavailableView("Preview unavailable", systemImage: "exclamationmark.triangle", description: Text(message))
                     .foregroundStyle(.white)
@@ -59,7 +45,6 @@ struct MPVPlayerView: View {
                 overlay
             }
         }
-        .coordinateSpace(.named(Self.coordinateSpace))
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.25)) { controlsVisible.toggle() }
@@ -67,22 +52,27 @@ struct MPVPlayerView: View {
         }
     }
 
+    /// Centre items fill the whole screen, ignoring the safe area, so they sit in the
+    /// middle of the picture, which is also centred on the full screen.
     @ViewBuilder
     private var overlay: some View {
-        if !player.hasVideo, !player.isBuffering {
+        if player.isLoaded, !player.hasVideo, !player.isBuffering {
             Image(systemName: "music.note")
                 .font(.system(size: 64))
                 .foregroundStyle(.white.opacity(0.35))
+                .fullScreenCentered()
         }
         if player.isBuffering {
             ProgressView()
                 .tint(.white)
                 .controlSize(.large)
+                .fullScreenCentered()
         }
         if controlsVisible {
+            transportButtons
+                .fullScreenCentered()
+                .transition(.opacity)
             VStack {
-                Spacer()
-                transportButtons
                 Spacer()
                 timeline
             }
@@ -146,64 +136,14 @@ struct MPVPlayerView: View {
         .frame(maxWidth: 560)
         .padding(.horizontal, 24)
         .padding(.bottom, 8)
-        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.coordinateSpace)).minY } action: { top in
-            timelineTop = top
-        }
-        .onDisappear { timelineTop = nil }
     }
 
-    /// Where subtitles go so they stay above the timeline while it is shown.
-    private var subtitleLayout: SubtitleLayout {
-        guard let aspect = player.videoAspect, surfaceFrame.width > 0, surfaceFrame.height > 0,
-              controlsVisible, let timelineTop else { return SubtitleLayout(position: 100) }
-        let video = AVMakeRect(aspectRatio: CGSize(width: aspect, height: 1), insideRect: surfaceFrame)
-        let limit = timelineTop - 8
-        guard limit < video.maxY, video.height > 0 else { return SubtitleLayout(position: 100) }
-        let percent = (limit - video.minY) / video.height * 100
-        return SubtitleLayout(position: Int(min(100, max(50, percent)).rounded(.down)))
-    }
+}
 
-    @ViewBuilder
-    private var trackMenu: some View {
-        let audio = player.audioTracks
-        let subtitles = player.subtitleTracks
-        if audio.count > 1 || !subtitles.isEmpty {
-            Menu {
-                if audio.count > 1 {
-                    Section("Audio") {
-                        ForEach(audio) { track in
-                            trackButton(track.displayName, selected: track.isSelected) {
-                                player.selectTrack(track, type: "audio")
-                            }
-                        }
-                    }
-                }
-                if !subtitles.isEmpty {
-                    Section("Subtitles") {
-                        trackButton(String(localized: "Off"), selected: !subtitles.contains(where: \.isSelected)) {
-                            player.selectTrack(nil, type: "sub")
-                        }
-                        ForEach(subtitles) { track in
-                            trackButton(track.displayName, selected: track.isSelected) {
-                                player.selectTrack(track, type: "sub")
-                            }
-                        }
-                    }
-                }
-            } label: {
-                Label("Audio and Subtitles", systemImage: "captions.bubble")
-            }
-        }
-    }
-
-    private func trackButton(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            if selected {
-                Label(title, systemImage: "checkmark")
-            } else {
-                Text(title)
-            }
-        }
+private extension View {
+    func fullScreenCentered() -> some View {
+        frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
     }
 }
 
@@ -224,10 +164,6 @@ private struct AutoHideKey: Equatable {
     let paused: Bool
     let scrubbing: Bool
     let interaction: Date
-}
-
-private struct SubtitleLayout: Equatable {
-    let position: Int
 }
 
 /// A thin progress bar that seeks when the drag ends.
@@ -325,6 +261,8 @@ private final class MPVLayerHostView: UIView {
         player.layer.frame = bounds
         player.layer.contentsScale = traitCollection.displayScale
         CATransaction.commit()
+        let screen = window?.screen.bounds.size ?? bounds.size
+        player.maximumDrawableDimension = max(screen.width, screen.height) * traitCollection.displayScale
         if bounds.width > 1, bounds.height > 1 {
             player.startIfNeeded()
         }

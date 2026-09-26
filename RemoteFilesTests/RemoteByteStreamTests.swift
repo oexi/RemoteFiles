@@ -104,14 +104,21 @@ final class RemoteByteStreamTests: XCTestCase {
 }
 
 final class MPVPlayerFormatTests: XCTestCase {
-    func testLibmpvHandlesFormatsAVFoundationCannot() {
-        XCTAssertTrue(MPVPlayer.isPreferred(forFileName: "movie.mkv"))
-        XCTAssertTrue(MPVPlayer.isPreferred(forFileName: "clip.WEBM"))
-        XCTAssertTrue(MPVPlayer.isPreferred(forFileName: "old.avi"))
-        XCTAssertFalse(MPVPlayer.isPreferred(forFileName: "movie.mp4"))
-        XCTAssertFalse(MPVPlayer.isPreferred(forFileName: "notes.txt"))
-        XCTAssertFalse(MPVPlayer.isPreferred(forFileName: "noextension"))
+    func testPlaysAudioAndVideoByExtension() {
+        XCTAssertTrue(MPVPlayer.canPlay(fileName: "movie.mkv"))
+        XCTAssertTrue(MPVPlayer.canPlay(fileName: "clip.WEBM"))
+        XCTAssertTrue(MPVPlayer.canPlay(fileName: "old.avi"))
         XCTAssertTrue(MPVPlayer.canPlay(fileName: "movie.mp4"))
+        XCTAssertTrue(MPVPlayer.canPlay(fileName: "song.MP3"))
+        XCTAssertFalse(MPVPlayer.canPlay(fileName: "notes.txt"))
+        XCTAssertFalse(MPVPlayer.canPlay(fileName: "noextension"))
+    }
+
+    func testFTPIsNotStreamed() {
+        XCTAssertFalse(RemoteByteStreamSource.protocolSupportsStreaming(.ftp))
+        XCTAssertFalse(RemoteByteStreamSource.protocolSupportsStreaming(.ftps))
+        XCTAssertTrue(RemoteByteStreamSource.protocolSupportsStreaming(.smb))
+        XCTAssertTrue(RemoteByteStreamSource.protocolSupportsStreaming(.sftp))
     }
 
     func testTimeString() {
@@ -121,18 +128,30 @@ final class MPVPlayerFormatTests: XCTestCase {
         XCTAssertEqual(MPVPlayer.timeString(.nan), "0:00")
     }
 
-    func testTrackListDecodesFromLibmpvJSON() throws {
+    func testVideoTrackSizeFollowsRotationAndPixelAspect() throws {
         let json = """
-        [{"id":1,"type":"video","selected":true,"codec":"hevc","albumart":false},
-         {"id":1,"type":"audio","lang":"jpn","codec":"aac","selected":true},
-         {"id":2,"type":"audio","title":"Commentary","selected":false},
-         {"id":1,"type":"sub","lang":"chi","codec":"ass"}]
+        [{"id":1,"type":"video","demux-w":1920,"demux-h":1080},
+         {"id":2,"type":"video","demux-w":1920,"demux-h":1080,"demux-rotation":90},
+         {"id":3,"type":"video","demux-w":720,"demux-h":576,"demux-par":1.4222},
+         {"id":1,"type":"audio","lang":"jpn"},
+         {"id":1,"type":"sub","lang":"chi"}]
         """
         let tracks = try JSONDecoder().decode([MPVPlayer.Track].self, from: Data(json.utf8))
-        XCTAssertEqual(tracks.count, 4)
-        XCTAssertEqual(tracks[1].displayName, "JPN · aac")
-        XCTAssertEqual(tracks[2].displayName, "Commentary")
-        XCTAssertFalse(tracks[3].isSelected)
+        XCTAssertEqual(tracks[0].displaySize, CGSize(width: 1920, height: 1080))
+        XCTAssertEqual(tracks[1].displaySize, CGSize(width: 1080, height: 1920))
+        XCTAssertEqual(Double(tracks[2].displaySize?.width ?? 0), 1024, accuracy: 0.1)
+        XCTAssertNil(tracks[3].displaySize)
+    }
+
+    func testDrawableSizeKeepsAspectWithinScreen() {
+        XCTAssertEqual(
+            MPVPlayer.drawableSize(for: CGSize(width: 3840, height: 2160), maximumDimension: 2556),
+            CGSize(width: 2556, height: 1438)
+        )
+        XCTAssertEqual(
+            MPVPlayer.drawableSize(for: CGSize(width: 1280, height: 720), maximumDimension: 2556),
+            CGSize(width: 1280, height: 720)
+        )
     }
 }
 

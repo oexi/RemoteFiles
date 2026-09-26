@@ -7,49 +7,22 @@ struct RemotePreviewView: View {
     @State private var localURL: URL?
     @State private var errorMessage: String?
     @State private var showingShare = false
-    @State private var playback: Playback
-
-    /// How the file is shown: streamed with AVFoundation, streamed with libmpv, or
-    /// downloaded to the cache first.
-    private enum Playback {
-        case native(RemoteMediaResourceLoader)
-        case mpv(RemoteByteStreamSource)
-        case download
-
-        var needsDownload: Bool {
-            if case .download = self { return true }
-            return false
-        }
-    }
+    @State private var streamSource: RemoteByteStreamSource?
 
     init(provider: any RemoteFileProvider, item: RemoteItem) {
         self.provider = provider
         self.item = item
-        if !MPVPlayer.isPreferred(forFileName: item.name),
-           let loader = RemoteMediaResourceLoader(provider: provider, item: item) {
-            _playback = State(initialValue: .native(loader))
-        } else {
-            _playback = State(initialValue: Self.mpvPlayback(provider: provider, item: item) ?? .download)
-        }
-    }
-
-    private static func mpvPlayback(provider: any RemoteFileProvider, item: RemoteItem) -> Playback? {
-        guard MPVPlayer.canPlay(fileName: item.name),
-              let source = RemoteByteStreamSource(provider: provider, item: item) else { return nil }
-        return .mpv(source)
+        let source = MPVPlayer.canPlay(fileName: item.name)
+            ? RemoteByteStreamSource(provider: provider, item: item)
+            : nil
+        _streamSource = State(initialValue: source)
     }
 
     var body: some View {
         Group {
-            switch playback {
-            case .native(let loader):
-                RemoteMediaPlayerView(loader: loader) {
-                    // AVFoundation rejected the stream (for example an unsupported codec).
-                    playback = Self.mpvPlayback(provider: provider, item: item) ?? .download
-                }
-            case .mpv(let source):
-                MPVPlayerView(media: .remote(source))
-            case .download:
+            if let streamSource {
+                MPVPlayerView(media: .remote(streamSource))
+            } else {
                 downloadedPreview
             }
         }
@@ -74,9 +47,10 @@ struct RemotePreviewView: View {
                 .ignoresSafeArea()
             }
         }
-        .task(id: playback.needsDownload) {
-            // Streamed media is only downloaded when neither player can stream it.
-            guard playback.needsDownload, localURL == nil else { return }
+        .task {
+            // Media is streamed; everything else, and media that cannot be streamed
+            // (FTP, unknown size), is downloaded to the cache first.
+            guard streamSource == nil, localURL == nil else { return }
             do {
                 localURL = try await CacheManager.shared.materialize(provider: provider, item: item)
             } catch {
@@ -89,7 +63,7 @@ struct RemotePreviewView: View {
     private var downloadedPreview: some View {
         Group {
             if let localURL {
-                if MPVPlayer.isPreferred(forFileName: item.name) {
+                if MPVPlayer.canPlay(fileName: item.name) {
                     MPVPlayerView(media: .local(localURL))
                 } else {
                     QuickLookView(url: localURL)
