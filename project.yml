@@ -8,8 +8,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: 5.9
-    CURRENT_PROJECT_VERSION: 30
-    MARKETING_VERSION: 0.6.1
+    CURRENT_PROJECT_VERSION: 31
+    MARKETING_VERSION: 0.7.0
     IPHONEOS_DEPLOYMENT_TARGET: 17.0
     TARGETED_DEVICE_FAMILY: "1,2"
     SUPPORTS_MACCATALYST: NO
@@ -60,6 +60,9 @@ packages:
   TreeSitterLanguages:
     url: https://github.com/simonbs/TreeSitterLanguages.git
     revision: 15cf3a9ec3ab95e0d058b7df9f35619123c9e02d
+  MPVKit:
+    url: https://github.com/mpvkit/MPVKit.git
+    revision: 288527dffbc6d3e63cce147fc7b520c64a791603
 targets:
   RemoteFiles:
     type: application
@@ -72,7 +75,8 @@ targets:
       - path: RemoteFiles/Resources
     settings:
       base:
-        # Holds only keys that have no INFOPLIST_KEY_ build setting (NSBonjourServices);
+        # Holds only keys that have no INFOPLIST_KEY_ build setting (NSBonjourServices,
+        # UIBackgroundModes for audio that keeps playing in the background);
         # Xcode merges it with the generated Info.plist.
         INFOPLIST_FILE: RemoteFiles/Info.plist
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: RemoteFiles looks for file servers on your local network so you can add them quickly.
@@ -97,6 +101,7 @@ targets:
       - package: ZIPFoundation
       - package: SWCompression
       - package: LibArchive
+      - package: MPVKit
       - package: TreeSitterLanguages
         product: TreeSitterBashRunestone
       - package: TreeSitterLanguages

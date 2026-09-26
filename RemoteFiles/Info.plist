@@ -12,5 +12,9 @@
 		<string>_ftp._tcp</string>
 		<string>_nfs._tcp</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>
