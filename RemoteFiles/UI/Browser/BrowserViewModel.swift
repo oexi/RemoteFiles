@@ -578,9 +578,9 @@ final class BrowserViewModel: ObservableObject {
             // These providers multiplex concurrent requests over one session.
             return 3
         case .smb:
-            // SMBClient hands out message IDs and credits without locking or
-            // tracking the server's credit grant; parallel 8 MB writes made
-            // the server drop the connection and fail every file in flight.
+            // SMBClient exchanges one request at a time per connection, so
+            // parallel uploads gain nothing. Before oexi/SMBClient#1 they
+            // also made the server drop the connection.
             return 1
         case .ftp, .ftps, .nfs:
             return 1
