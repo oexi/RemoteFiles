@@ -208,11 +208,12 @@ struct BrowserView: View {
         }
         // Folders are opened in place (a folder cannot be picked as a copy).
         // Under LiveContainer that needs its "Fix File Picker" setting,
-        // otherwise Open does nothing; see README.
+        // otherwise Open does nothing; see README. The picker cannot check
+        // folders, so Open picks the one being viewed.
         .fileImporter(
             isPresented: $showingFolderImporter,
             allowedContentTypes: [.folder],
-            allowsMultipleSelection: true
+            allowsMultipleSelection: false
         ) { result in
             switch result {
             case .success(let urls):
