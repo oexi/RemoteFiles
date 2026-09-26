@@ -105,6 +105,8 @@ Consequences:
   3. Otherwise, a full download into `CacheManager`, then QuickLook (or mpv for a local file).
 
   FTP/FTPS never stream: every range needs a new connection.
+
+  Subtitles use `sub-font-provider=none` plus the bundled `Resources/SubtitleFonts` folder (a folder reference, because libass loads every file in it). CoreText fallback hands libass private system font paths the app cannot open on devices, so CJK text rendered as boxes. The simulator does not show this.
 - **Localization:** UI strings live in `Resources/{en,zh-Hans,zh-Hant}.lproj/Localizable.strings`. Add new keys to all three files; zh-Hant uses 資料夾 / 檔案 / 伺服器 terminology.
 
 ## Tests

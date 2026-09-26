@@ -235,3 +235,4 @@
 "Track %lld" = "Track %lld";
 "The video player could not be started." = "The video player could not be started.";
 "The file could not be played (%@)." = "The file could not be played (%@).";
+"Playback Position" = "Playback Position";

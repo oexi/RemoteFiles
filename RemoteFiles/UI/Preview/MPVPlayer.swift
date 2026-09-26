@@ -41,6 +41,8 @@ final class MPVPlayer: ObservableObject {
     @Published private(set) var duration: Double = 0
     @Published private(set) var tracks: [Track] = []
     @Published private(set) var errorMessage: String?
+    /// Display aspect ratio (width / height) of the video, once known.
+    @Published private(set) var videoAspect: Double?
 
     var audioTracks: [Track] { tracks.filter { $0.type == "audio" } }
     var subtitleTracks: [Track] { tracks.filter { $0.type == "sub" } }
@@ -49,6 +51,7 @@ final class MPVPlayer: ObservableObject {
     private let media: Media
     private var core: MPVCore?
     private var backgrounded = false
+    private var subtitlePosition = 100
 
     init(media: Media) {
         self.media = media
@@ -117,6 +120,15 @@ final class MPVPlayer: ObservableObject {
         core?.setProperty(property, track.map { String($0.id) } ?? "no")
     }
 
+    /// Moves subtitles up, as a percentage of the video height (100 is the default bottom
+    /// position), so they stay above the playback controls.
+    func setSubtitlePosition(_ percent: Int) {
+        let percent = min(100, max(0, percent))
+        guard percent != subtitlePosition else { return }
+        subtitlePosition = percent
+        core?.setProperty("sub-pos", String(percent))
+    }
+
     /// MoltenVK loses its surface in the background; drop video until the app returns.
     func enterBackground() {
         guard core != nil, !backgrounded else { return }
@@ -144,6 +156,8 @@ final class MPVPlayer: ObservableObject {
             if abs(value - position) >= 0.25 || value < position { position = value }
         case .double("duration", let value):
             duration = value
+        case .double("video-params/aspect", let value):
+            videoAspect = value > 0 ? value : nil
         case .string("track-list", let json):
             tracks = (try? JSONDecoder().decode([Track].self, from: Data(json.utf8))) ?? []
         case .fileLoaded:
@@ -220,6 +234,9 @@ final class MPVCore: @unchecked Sendable {
         case failed(String)
     }
 
+    /// Family name of the bundled `SubtitleFonts/NotoSansSC-Regular.otf`.
+    static let subtitleFontFamily = "Noto Sans SC"
+
     private let queue = DispatchQueue(label: "RemoteFiles.MPV", qos: .userInitiated)
     private let source: RemoteByteStreamSource?
     private let onEvent: @Sendable (Event) -> Void
@@ -245,6 +262,14 @@ final class MPVCore: @unchecked Sendable {
             ("input-vo-keyboard", "no"),
             ("subs-match-os-language", "yes"),
             ("subs-fallback", "yes"),
+            // On devices CoreText falls back to private system fonts (PingFangUI.ttc) that
+            // the app cannot open, so CJK text renders as boxes and stalls rendering.
+            // Use fonts embedded in the file plus a bundled CJK font instead.
+            ("sub-font-provider", "none"),
+            ("sub-font", MPVCore.subtitleFontFamily),
+            // Render text subtitles inside the picture rather than in the black bars,
+            // so they stay clear of the controls.
+            ("sub-use-margins", "no"),
             // Read ahead in memory only; nothing is cached on disk.
             ("cache", "yes"),
             ("cache-on-disk", "no"),
@@ -253,6 +278,9 @@ final class MPVCore: @unchecked Sendable {
         ]
         for (name, value) in options {
             mpv_set_option_string(handle, name, value)
+        }
+        if let fonts = Bundle.main.url(forResource: "SubtitleFonts", withExtension: nil) {
+            mpv_set_option_string(handle, "sub-fonts-dir", fonts.path)
         }
         #if DEBUG
         mpv_request_log_messages(handle, "warn")
@@ -276,6 +304,7 @@ final class MPVCore: @unchecked Sendable {
         mpv_observe_property(handle, 0, "eof-reached", MPV_FORMAT_FLAG)
         mpv_observe_property(handle, 0, "time-pos", MPV_FORMAT_DOUBLE)
         mpv_observe_property(handle, 0, "duration", MPV_FORMAT_DOUBLE)
+        mpv_observe_property(handle, 0, "video-params/aspect", MPV_FORMAT_DOUBLE)
         // Node properties formatted as strings come back as JSON.
         mpv_observe_property(handle, 0, "track-list", MPV_FORMAT_STRING)
 

@@ -73,6 +73,13 @@ targets:
           - Resources
           - Info.plist
       - path: RemoteFiles/Resources
+        excludes:
+          - SubtitleFonts
+      # A folder reference, so the fonts stay in their own bundle directory:
+      # libass loads every file in the directory given to mpv's sub-fonts-dir.
+      - path: RemoteFiles/Resources/SubtitleFonts
+        type: folder
+        buildPhase: resources
     settings:
       base:
         # Holds only keys that have no INFOPLIST_KEY_ build setting (NSBonjourServices);

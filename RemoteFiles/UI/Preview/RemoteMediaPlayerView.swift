@@ -8,17 +8,31 @@ struct RemoteMediaPlayerView: View {
     let onUnplayable: () -> Void
 
     @State private var player: AVPlayer?
+    @State private var chromeVisible = true
+    @State private var lastInteraction = Date()
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let player {
                 VideoPlayer(player: player)
-                    .ignoresSafeArea(edges: .bottom)
+                    .ignoresSafeArea()
+                    // AVKit toggles its own controls on a tap; follow it with the bars.
+                    .simultaneousGesture(TapGesture().onEnded {
+                        withAnimation(.easeInOut(duration: 0.25)) { chromeVisible.toggle() }
+                        lastInteraction = Date()
+                    })
             } else {
                 ProgressView()
                     .tint(.white)
             }
+        }
+        .playbackChrome(visible: chromeVisible)
+        .task(id: lastInteraction) {
+            guard chromeVisible, player != nil else { return }
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, player?.timeControlStatus != .paused else { return }
+            withAnimation(.easeInOut(duration: 0.25)) { chromeVisible = false }
         }
         .task { await prepare() }
         .onDisappear {
@@ -46,5 +60,6 @@ struct RemoteMediaPlayerView: View {
         let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
         self.player = player
         player.play()
+        lastInteraction = Date()
     }
 }

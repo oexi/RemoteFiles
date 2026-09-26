@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import UIKit
 
@@ -9,16 +10,48 @@ struct MPVPlayerView: View {
     @State private var controlsVisible = true
     @State private var scrubPosition: Double?
     @State private var lastInteraction = Date()
+    @State private var surfaceFrame: CGRect = .zero
+    @State private var timelineTop: CGFloat?
+
+    private static let coordinateSpace = "MPVPlayerView"
 
     init(media: MPVPlayer.Media) {
         _player = StateObject(wrappedValue: MPVPlayer(media: media))
     }
 
     var body: some View {
+        content
+            .playbackChrome(visible: controlsVisible || player.errorMessage != nil)
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) { trackMenu }
+            }
+            .task(id: AutoHideKey(visible: controlsVisible, paused: player.isPaused, scrubbing: scrubPosition != nil, interaction: lastInteraction)) {
+                guard controlsVisible, !player.isPaused, scrubPosition == nil else { return }
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: 0.25)) { controlsVisible = false }
+            }
+            .onChange(of: subtitleLayout) { _, layout in
+                player.setSubtitlePosition(layout.position)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                switch phase {
+                case .background: player.enterBackground()
+                case .active: player.enterForeground()
+                default: break
+                }
+            }
+            .onDisappear { player.pause() }
+    }
+
+    private var content: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             MPVVideoSurface(player: player)
                 .ignoresSafeArea()
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.coordinateSpace)) } action: { frame in
+                    surfaceFrame = frame
+                }
             if let message = player.errorMessage {
                 ContentUnavailableView("Preview unavailable", systemImage: "exclamationmark.triangle", description: Text(message))
                     .foregroundStyle(.white)
@@ -26,39 +59,27 @@ struct MPVPlayerView: View {
                 overlay
             }
         }
+        .coordinateSpace(.named(Self.coordinateSpace))
         .contentShape(Rectangle())
         .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) { controlsVisible.toggle() }
+            withAnimation(.easeInOut(duration: 0.25)) { controlsVisible.toggle() }
             lastInteraction = Date()
         }
-        .toolbar(controlsVisible || player.errorMessage != nil ? .automatic : .hidden, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) { trackMenu }
-        }
-        .task(id: AutoHideKey(visible: controlsVisible, paused: player.isPaused, scrubbing: scrubPosition != nil, interaction: lastInteraction)) {
-            guard controlsVisible, !player.isPaused, scrubPosition == nil, player.hasVideo else { return }
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 0.2)) { controlsVisible = false }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            switch phase {
-            case .background: player.enterBackground()
-            case .active: player.enterForeground()
-            default: break
-            }
-        }
-        .onDisappear { player.pause() }
     }
 
     @ViewBuilder
     private var overlay: some View {
+        if !player.hasVideo, !player.isBuffering {
+            Image(systemName: "music.note")
+                .font(.system(size: 64))
+                .foregroundStyle(.white.opacity(0.35))
+        }
         if player.isBuffering {
             ProgressView()
                 .tint(.white)
                 .controlSize(.large)
         }
-        if controlsVisible || !player.hasVideo {
+        if controlsVisible {
             VStack {
                 Spacer()
                 transportButtons
@@ -85,7 +106,7 @@ struct MPVPlayerView: View {
                 lastInteraction = Date()
             } label: {
                 Image(systemName: player.isPaused ? "play.fill" : "pause.fill")
-                    .font(.system(size: 44))
+                    .font(.system(size: 40))
                     .frame(width: 56, height: 56)
             }
             .accessibilityLabel(player.isPaused ? Text("Play") : Text("Pause"))
@@ -100,40 +121,46 @@ struct MPVPlayerView: View {
             .accessibilityLabel(Text("Skip Forward 10 Seconds"))
         }
         .foregroundStyle(.white)
-        .shadow(radius: 4)
+        .shadow(color: .black.opacity(0.5), radius: 6)
         .opacity(player.isBuffering ? 0 : 1)
     }
 
     private var timeline: some View {
-        VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    get: { scrubPosition ?? player.position },
-                    set: { scrubPosition = $0 }
-                ),
-                in: 0...max(player.duration, 1),
-                onEditingChanged: { editing in
-                    guard !editing, let target = scrubPosition else { return }
-                    player.seek(to: target)
-                    scrubPosition = nil
-                    lastInteraction = Date()
-                }
-            )
-            .disabled(player.duration <= 0)
-            HStack {
-                Text(MPVPlayer.timeString(scrubPosition ?? player.position))
-                Spacer()
-                Text(MPVPlayer.timeString(player.duration))
+        HStack(spacing: 12) {
+            Text(MPVPlayer.timeString(scrubPosition ?? player.position))
+            PlaybackScrubber(
+                position: player.position,
+                duration: player.duration,
+                scrubPosition: $scrubPosition
+            ) { target in
+                player.seek(to: target)
+                lastInteraction = Date()
             }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white)
+            Text(MPVPlayer.timeString(player.duration))
         }
-        .tint(.white)
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial.opacity(0.8), in: RoundedRectangle(cornerRadius: 14))
-        .environment(\.colorScheme, .dark)
-        .padding([.horizontal, .bottom])
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.45), in: Capsule())
+        .frame(maxWidth: 560)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 8)
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.coordinateSpace)).minY } action: { top in
+            timelineTop = top
+        }
+        .onDisappear { timelineTop = nil }
+    }
+
+    /// Where subtitles go so they stay above the timeline while it is shown.
+    private var subtitleLayout: SubtitleLayout {
+        guard let aspect = player.videoAspect, surfaceFrame.width > 0, surfaceFrame.height > 0,
+              controlsVisible, let timelineTop else { return SubtitleLayout(position: 100) }
+        let video = AVMakeRect(aspectRatio: CGSize(width: aspect, height: 1), insideRect: surfaceFrame)
+        let limit = timelineTop - 8
+        guard limit < video.maxY, video.height > 0 else { return SubtitleLayout(position: 100) }
+        let percent = (limit - video.minY) / video.height * 100
+        return SubtitleLayout(position: Int(min(100, max(50, percent)).rounded(.down)))
     }
 
     @ViewBuilder
@@ -180,11 +207,88 @@ struct MPVPlayerView: View {
     }
 }
 
+extension View {
+    /// Hides the tab bar while media plays, and the navigation bar, status bar and
+    /// home indicator whenever the player's controls are hidden.
+    func playbackChrome(visible: Bool) -> some View {
+        self
+            .toolbar(.hidden, for: .tabBar)
+            .toolbar(visible ? .visible : .hidden, for: .navigationBar)
+            .statusBarHidden(!visible)
+            .persistentSystemOverlays(visible ? .automatic : .hidden)
+    }
+}
+
 private struct AutoHideKey: Equatable {
     let visible: Bool
     let paused: Bool
     let scrubbing: Bool
     let interaction: Date
+}
+
+private struct SubtitleLayout: Equatable {
+    let position: Int
+}
+
+/// A thin progress bar that seeks when the drag ends.
+private struct PlaybackScrubber: View {
+    let position: Double
+    let duration: Double
+    @Binding var scrubPosition: Double?
+    let onCommit: (Double) -> Void
+
+    private var fraction: Double {
+        guard duration > 0 else { return 0 }
+        return min(1, max(0, (scrubPosition ?? position) / duration))
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let scrubbing = scrubPosition != nil
+            let trackHeight: CGFloat = scrubbing ? 6 : 4
+            let knob: CGFloat = scrubbing ? 16 : 12
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.3))
+                    .frame(height: trackHeight)
+                Capsule()
+                    .fill(.white)
+                    .frame(width: width * fraction, height: trackHeight)
+                Circle()
+                    .fill(.white)
+                    .frame(width: knob, height: knob)
+                    .offset(x: width * fraction - knob / 2)
+            }
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard duration > 0, width > 0 else { return }
+                        scrubPosition = min(1, max(0, value.location.x / width)) * duration
+                    }
+                    .onEnded { _ in
+                        guard let target = scrubPosition else { return }
+                        onCommit(target)
+                        scrubPosition = nil
+                    }
+            )
+            .animation(.easeOut(duration: 0.15), value: scrubbing)
+        }
+        .frame(height: 28)
+        .disabled(duration <= 0)
+        .accessibilityElement()
+        .accessibilityLabel(Text("Playback Position"))
+        .accessibilityValue(Text(MPVPlayer.timeString(scrubPosition ?? position)))
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: onCommit(position + 10)
+            case .decrement: onCommit(position - 10)
+            @unknown default: break
+            }
+        }
+    }
 }
 
 /// Hosts the player's Metal layer and starts playback once the layer has a size.

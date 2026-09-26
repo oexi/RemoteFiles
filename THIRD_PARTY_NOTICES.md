@@ -18,3 +18,10 @@ https://github.com/mpvkit/MPVKit
 Source revision used: `288527dffbc6d3e63cce147fc7b520c64a791603` (MPVKit 1.0.0, LGPL build).
 
 MPVKit is licensed under the GNU Lesser General Public License, version 3 (LGPL-3.0). mpv and FFmpeg in this build are licensed under the LGPL, version 2.1 or later; their bundled libraries keep their own licenses. Sources are available from the MPVKit project and the upstream projects it builds.
+
+## Noto Sans SC
+
+`RemoteFiles/Resources/SubtitleFonts/NotoSansSC-Regular.otf` is the Simplified Chinese subset of Noto Sans CJK, used to render subtitles with libass (iOS devices do not let the app open the system CJK fonts):
+https://github.com/notofonts/noto-cjk/blob/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf
+
+Noto Sans CJK is licensed under the SIL Open Font License, version 1.1; the license text ships as `NotoSansSC-LICENSE.txt`.
