@@ -32,9 +32,13 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
 
         var allowsMultipleSelection: Bool {
             switch self {
-            case .files, .folder:
+            case .files:
                 return true
-            case .privateKey:
+            case .folder, .privateKey:
+                // In multiple-selection mode the folder picker lists files
+                // with checkboxes and its Open button only takes checked
+                // items, so opening the folder the user is looking at did
+                // nothing. Single selection makes Open pick that folder.
                 return false
             }
         }

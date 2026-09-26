@@ -88,6 +88,26 @@ final class WebDAVProviderTests: XCTestCase {
         await provider.disconnect()
     }
 
+    func testForbiddenIsPermissionDeniedNotAuthentication() async throws {
+        WebDAVTestURLProtocol.reset()
+        defer { WebDAVTestURLProtocol.reset() }
+
+        var profile = ConnectionProfile.empty(for: .webdav)
+        profile.host = "https://example.com/dav"
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [WebDAVTestURLProtocol.self]
+        let provider = WebDAVProvider(profile: profile, credential: nil, session: URLSession(configuration: configuration))
+
+        do {
+            _ = try await provider.list(path: "/private")
+            XCTFail("Expected HTTP 403 to fail")
+        } catch RemoteProviderError.permissionDenied {
+        } catch {
+            XCTFail("Expected permissionDenied, got \(error)")
+        }
+        await provider.disconnect()
+    }
+
     func testDAVHrefDecodesReservedCharactersOnlyAsPathData() throws {
         var profile = ConnectionProfile.empty(for: .webdav)
         profile.host = "https://example.com/dav"

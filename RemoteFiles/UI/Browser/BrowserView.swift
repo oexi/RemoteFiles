@@ -25,6 +25,7 @@ struct BrowserView: View {
     @State private var newFolderName = ""
     @State private var importSelection: ImportSelection = .files
     @State private var showingImporter = false
+    @State private var pickedImportURLs: [URL] = []
     @State private var searchText = ""
     @State private var renameItem: RemoteItem?
     @State private var renameText = ""
@@ -91,7 +92,7 @@ struct BrowserView: View {
                                 importSelection = .files
                                 showingImporter = true
                             }
-                            Button("Upload Folder", systemImage: "folder.badge.plus") {
+                            Button("Upload Folder", systemImage: "square.and.arrow.up.on.square") {
                                 importSelection = .folder
                                 showingImporter = true
                             }
@@ -221,12 +222,12 @@ struct BrowserView: View {
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "Unknown error") }
-        .sheet(isPresented: $showingImporter) {
+        .sheet(isPresented: $showingImporter, onDismiss: startPickedUpload) {
             SystemDocumentPicker(
                 mode: importSelection.pickerMode,
                 onPick: { urls in
+                    pickedImportURLs = urls
                     showingImporter = false
-                    Task { await model.upload(localURLs: urls, transfers: transfers) }
                 },
                 onCancel: {
                     showingImporter = false
@@ -236,30 +237,35 @@ struct BrowserView: View {
         }
     }
 
+    /// Starts the upload only once the document picker has finished
+    /// dismissing, so a name-conflict prompt is not presented (and lost)
+    /// while the picker sheet is still animating away.
+    private func startPickedUpload() {
+        let urls = pickedImportURLs
+        pickedImportURLs = []
+        guard !urls.isEmpty else { return }
+        Task { await model.upload(localURLs: urls, transfers: transfers) }
+    }
+
     var body: some View {
-        browserWithPrompts
+        let shownConflictID = model.pendingUploadConflict?.id
+        return browserWithPrompts
         .confirmationDialog(
             "Item Already Exists",
             isPresented: Binding(
                 get: { model.pendingUploadConflict != nil },
-                set: { if !$0 { model.resolveUploadConflict(.stop, applyToAll: false) } }
+                set: { if !$0, let shownConflictID { model.dismissUploadConflict(id: shownConflictID) } }
             ),
             titleVisibility: .visible,
             presenting: model.pendingUploadConflict
         ) { conflict in
-            if !conflict.existingIsFolder {
-                Button("Replace") { model.resolveUploadConflict(.replace, applyToAll: false) }
-            }
-            Button("Keep Both") { model.resolveUploadConflict(.keepBoth, applyToAll: false) }
-            Button("Skip") { model.resolveUploadConflict(.skip, applyToAll: false) }
-            if !conflict.existingIsFolder {
-                Button("Replace All") { model.resolveUploadConflict(.replace, applyToAll: true) }
-            }
-            Button("Keep Both for All") { model.resolveUploadConflict(.keepBoth, applyToAll: true) }
-            Button("Skip All") { model.resolveUploadConflict(.skip, applyToAll: true) }
-            Button("Stop Upload", role: .cancel) { model.resolveUploadConflict(.stop, applyToAll: false) }
+            uploadConflictButtons(conflict)
         } message: { conflict in
-            Text("“\(conflict.name)” already exists in this folder.")
+            if conflict.isFolder && conflict.existingIsFolder {
+                Text("A folder named “\(conflict.name)” already exists in this folder. Merging puts the uploaded items into it; files with the same name are handled separately.")
+            } else {
+                Text("“\(conflict.name)” already exists in this folder.")
+            }
         }
         .alert("Rename", isPresented: Binding(
             get: { renameItem != nil },
@@ -340,6 +346,26 @@ struct BrowserView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func uploadConflictButtons(_ conflict: UploadConflict) -> some View {
+        let replaceTitle: LocalizedStringKey = conflict.isFolder ? "Merge" : "Replace"
+        let replaceAllTitle: LocalizedStringKey = conflict.isFolder ? "Merge All" : "Replace All"
+        if conflict.canReplace {
+            Button(replaceTitle) { model.resolveUploadConflict(.replace, applyToAll: false) }
+        }
+        Button("Keep Both") { model.resolveUploadConflict(.keepBoth, applyToAll: false) }
+        Button("Skip") { model.resolveUploadConflict(.skip, applyToAll: false) }
+        // "… All" only means something when more items of this kind follow.
+        if conflict.canApplyToAll {
+            if conflict.canReplace {
+                Button(replaceAllTitle) { model.resolveUploadConflict(.replace, applyToAll: true) }
+            }
+            Button("Keep Both for All") { model.resolveUploadConflict(.keepBoth, applyToAll: true) }
+            Button("Skip All") { model.resolveUploadConflict(.skip, applyToAll: true) }
+        }
+        Button("Stop Upload", role: .cancel) { model.resolveUploadConflict(.stop, applyToAll: false) }
     }
 
     private var browserHeader: some View {
