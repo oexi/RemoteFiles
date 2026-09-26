@@ -256,13 +256,11 @@ private final class MPVLayerHostView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        player.layer.frame = bounds
-        player.layer.contentsScale = traitCollection.displayScale
-        CATransaction.commit()
-        let screen = window?.screen.bounds.size ?? bounds.size
-        player.maximumDrawableDimension = max(screen.width, screen.height) * traitCollection.displayScale
+        player.layout(
+            in: bounds,
+            displayScale: traitCollection.displayScale,
+            screenSize: window?.screen.bounds.size ?? bounds.size
+        )
         if bounds.width > 1, bounds.height > 1 {
             player.startIfNeeded()
         }

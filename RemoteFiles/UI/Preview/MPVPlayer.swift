@@ -54,23 +54,51 @@ final class MPVPlayer: ObservableObject {
     @Published private(set) var duration: Double = 0
     @Published private(set) var errorMessage: String?
 
-    /// Longest side, in pixels, of the drawable video is rendered into. Set by the
-    /// hosting view from the screen size.
-    var maximumDrawableDimension: CGFloat = 2560
-
     private let media: Media
     private var core: MPVCore?
     private var backgrounded = false
+    private var containerBounds: CGRect = .zero
+    private var displayScale: CGFloat = 2
+    private var maximumPixelDimension: CGFloat = 2560
+    /// Pixel size of the layer once video has started; it never changes afterwards.
+    private var videoPixelSize: CGSize?
 
     init(media: Media) {
         self.media = media
         layer.backgroundColor = CGColor(gray: 0, alpha: 1)
         layer.framebufferOnly = true
-        layer.contentsGravity = .resizeAspect
     }
 
     deinit {
         core?.destroy()
+    }
+
+    /// Fits `layer` into the hosting view. Before video starts the layer fills the view.
+    /// Afterwards its bounds stay at the video's pixel size and only a scale transform
+    /// changes: MPVKit's MoltenVK context reads the layer size only when video starts and
+    /// never follows later resizes such as rotation.
+    func layout(in bounds: CGRect, displayScale: CGFloat, screenSize: CGSize) {
+        containerBounds = bounds
+        self.displayScale = displayScale
+        maximumPixelDimension = max(screenSize.width, screenSize.height) * displayScale
+        layoutLayer()
+    }
+
+    private func layoutLayer() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard let videoPixelSize else {
+            layer.transform = CATransform3DIdentity
+            layer.contentsScale = displayScale
+            layer.frame = containerBounds
+            return
+        }
+        let size = CGSize(width: videoPixelSize.width / layer.contentsScale, height: videoPixelSize.height / layer.contentsScale)
+        layer.bounds = CGRect(origin: .zero, size: size)
+        layer.position = CGPoint(x: containerBounds.midX, y: containerBounds.midY)
+        let scale = min(containerBounds.width / size.width, containerBounds.height / size.height)
+        layer.transform = scale.isFinite && scale > 0 ? CATransform3DMakeScale(scale, scale, 1) : CATransform3DIdentity
     }
 
     /// Starts playback once `layer` has a size; later calls do nothing.
@@ -166,14 +194,13 @@ final class MPVPlayer: ObservableObject {
         }
     }
 
-    /// Video starts disabled (`vid=no`). MPVKit's MoltenVK context reads the drawable size
-    /// only when video starts and never follows later resizes such as rotation, so the
-    /// drawable is fixed to the video's own aspect ratio first; Core Animation then scales
-    /// it to fit the layer in any orientation.
+    /// Video starts disabled (`vid=no`), so the layer can be given the video's own aspect
+    /// ratio before MoltenVK first reads its size; see `layout(in:displayScale:screenSize:)`.
     private func startVideoIfNeeded(_ tracks: [Track]) {
         guard !hasVideo, let track = tracks.first(where: { $0.type == "video" }) else { return }
         if let size = track.displaySize {
-            layer.fixedDrawableSize = Self.drawableSize(for: size, maximumDimension: maximumDrawableDimension)
+            videoPixelSize = Self.drawableSize(for: size, maximumDimension: maximumPixelDimension)
+            layoutLayer()
         }
         hasVideo = true
         core?.setProperty("vid", "auto")
@@ -218,25 +245,13 @@ final class MPVPlayer: ObservableObject {
     }
 }
 
-/// The layer libmpv renders into through MoltenVK.
+/// Works around MoltenVK shrinking the drawable to 1×1 when it forces a present,
+/// which flickers or leaves the video stuck at that size (mpv-player/mpv#13651).
 final class MPVMetalLayer: CAMetalLayer {
-    /// When set, the drawable keeps this size whatever the layer's bounds; see
-    /// `MPVPlayer.startVideoIfNeeded`.
-    var fixedDrawableSize: CGSize? {
-        didSet {
-            if let fixedDrawableSize { super.drawableSize = fixedDrawableSize }
-        }
-    }
-
     override var drawableSize: CGSize {
-        get { fixedDrawableSize ?? super.drawableSize }
+        get { super.drawableSize }
         set {
-            if let fixedDrawableSize {
-                // MoltenVK re-applies the swapchain extent; keep everything else out.
-                if newValue == fixedDrawableSize { super.drawableSize = newValue }
-            } else if Int(newValue.width) > 1, Int(newValue.height) > 1 {
-                // MoltenVK shrinks the drawable to 1×1 to force a present, which
-                // flickers or leaves the video at that size (mpv-player/mpv#13651).
+            if Int(newValue.width) > 1, Int(newValue.height) > 1 {
                 super.drawableSize = newValue
             }
         }

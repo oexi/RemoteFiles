@@ -102,7 +102,7 @@ Consequences:
 - **Media preview:** all audio and video plays in libmpv (MPVKit) via `MPVPlayerView`; there is no AVFoundation player. Subtitles are off; the preview is kept simple.
   - `MPVPlayer` registers a `remotefiles://` stream protocol. Its callbacks read through `RemoteByteStream` (blocking range reads on mpv's demux thread), and read-ahead stays in memory.
   - FTP/FTPS never stream, because every range needs a new connection. Those files are downloaded into `CacheManager` first, then played locally.
-  - MPVKit's MoltenVK context reads the layer's drawable size only when video starts, and ignores later resizes such as rotation. So video starts disabled (`vid=no`). Once the track list gives the video dimensions, the drawable is fixed to the video's aspect ratio (`MPVMetalLayer.fixedDrawableSize`), and Core Animation scales it with `.resizeAspect`.
+  - MPVKit's MoltenVK context reads the layer size (bounds × contentsScale, not `drawableSize`) only when video starts, and ignores later resizes such as rotation. So video starts disabled (`vid=no`). Once the track list gives the video dimensions, the layer's bounds are set to the video's pixel size and never change again. Fitting the layer to the screen then uses only a scale transform (`MPVPlayer.layout`).
 - **Localization:** UI strings live in `Resources/{en,zh-Hans,zh-Hant}.lproj/Localizable.strings`. Add new keys to all three files; zh-Hant uses 資料夾 / 檔案 / 伺服器 terminology.
 
 ## Tests
