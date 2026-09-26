@@ -22,14 +22,31 @@ enum RemoteArchiveService {
         intoFolder: Bool = false,
         progress: @escaping @Sendable (ArchiveExtractionProgress) -> Void = { _ in }
     ) async throws -> String {
-        progress(ArchiveExtractionProgress(phase: .downloading, fraction: nil))
-        let archiveURL = try await CacheManager.shared.materialize(provider: provider, item: item, forceRefresh: true)
         guard ArchiveManager.canOpen(fileName: item.name) else {
             throw RemoteProviderError.unsupported("This archive format is not supported.")
         }
 
-        let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("RemoteFiles-Extract-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        // File protocols have no server-side "extract" command, so the archive is always
+        // downloaded, extracted on the device, and the results uploaded next to it.
+        let workRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFiles-Extract-\(UUID().uuidString)", isDirectory: true)
+        let archiveURL = workRoot.appendingPathComponent("archive")
+        let tempRoot = workRoot.appendingPathComponent("extracted", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workRoot) }
+        try FileManager.default.createDirectory(at: workRoot, withIntermediateDirectories: true)
+
+        progress(ArchiveExtractionProgress(phase: .downloading, fraction: nil))
+        var downloadProgress: ByteProgressReporter?
+        try await RemoteFileOperations.download(item, from: provider, to: archiveURL) { received, total in
+            if downloadProgress == nil {
+                downloadProgress = ByteProgressReporter(totalBytes: total) { fraction in
+                    progress(ArchiveExtractionProgress(phase: .downloading, fraction: fraction))
+                }
+            }
+            downloadProgress?.update(completedBytes: received)
+        }
+        try Task.checkCancellation()
+
         try ArchiveManager.extract(archiveURL, originalName: item.name, to: tempRoot) { fraction in
             progress(ArchiveExtractionProgress(phase: .extracting, fraction: fraction))
         }
@@ -83,13 +100,19 @@ enum RemoteArchiveService {
             progress(ArchiveExtractionProgress(phase: .uploading, fraction: fraction))
         }
         uploadProgress.advance(by: 0)
+        var uploadedBytes: UInt64 = 0
         for file in plan.files {
-            try await provider.upload(
+            try Task.checkCancellation()
+            let uploadedBefore = uploadedBytes
+            try await RemoteFileOperations.uploadNewFile(
                 from: file.localURL,
                 to: RemotePath.join(destinationRoot, file.relativePath),
-                overwrite: false
-            )
-            uploadProgress.advance(by: file.size)
+                provider: provider
+            ) { sent in
+                uploadProgress.update(completedBytes: uploadedBefore + sent)
+            }
+            uploadedBytes += file.size
+            uploadProgress.update(completedBytes: uploadedBytes)
         }
         uploadProgress.finish()
         return destinationRoot

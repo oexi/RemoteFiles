@@ -446,16 +446,34 @@ final class SFTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remot
     }
 
     func move(from: String, to: String, overwrite: Bool) async throws {
-        if !overwrite {
-            do {
-                _ = try await attributes(path: to)
-                throw RemoteProviderError.conflict("An item already exists at \(to).")
-            } catch {
-                guard RemoteProviderError.isNotFound(error) else { throw error }
-            }
-        }
         let source = RemotePath.normalize(from)
         let destination = RemotePath.normalize(to)
+        let existing: RemoteItem?
+        do {
+            existing = try await attributes(path: destination)
+        } catch {
+            guard RemoteProviderError.isNotFound(error) else { throw error }
+            existing = nil
+        }
+        if existing != nil, !overwrite {
+            throw RemoteProviderError.conflict("An item already exists at \(to).")
+        }
+        // SFTP v3 RENAME fails with a generic "Failure" when the target exists, so replacing
+        // a file moves the old one aside first. A case-only rename on a case-insensitive
+        // server finds the source itself at the target and stays a plain rename.
+        if let existing, !existing.isDirectory, source.lowercased() != destination.lowercased() {
+            try await RemoteFileOperations.renameReplacingFile(
+                from: source,
+                to: destination,
+                rename: { try await self.rename($0, to: $1) },
+                remove: { try await self.remove(path: $0, isDirectory: false) }
+            )
+        } else {
+            try await rename(source, to: destination)
+        }
+    }
+
+    private func rename(_ source: String, to destination: String) async throws {
         do {
             try await client().rename(at: source, to: destination)
         } catch {

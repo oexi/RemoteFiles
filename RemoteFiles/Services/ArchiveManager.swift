@@ -834,7 +834,11 @@ final class ByteProgressReporter {
 
     func advance(by bytes: UInt64) {
         let (sum, overflow) = completedBytes.addingReportingOverflow(bytes)
-        completedBytes = overflow ? totalBytes : min(sum, totalBytes)
+        update(completedBytes: overflow ? totalBytes : sum)
+    }
+
+    func update(completedBytes bytes: UInt64) {
+        completedBytes = min(bytes, totalBytes)
         send(totalBytes == 0 ? 0 : Double(completedBytes) / Double(totalBytes))
     }
 
