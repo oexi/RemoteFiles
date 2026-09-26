@@ -32,15 +32,23 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
 
         var allowsMultipleSelection: Bool {
             switch self {
-            case .files:
+            case .files, .folder:
+                // In folder mode, Open with nothing checked still picks the
+                // folder being viewed.
                 return true
-            case .folder, .privateKey:
-                // In multiple-selection mode the folder picker lists files
-                // with checkboxes and its Open button only takes checked
-                // items, so opening the folder the user is looking at did
-                // nothing. Single selection makes Open pick that folder.
+            case .privateKey:
                 return false
             }
+        }
+
+        func makeController() -> UIDocumentPickerViewController {
+            let picker = UIDocumentPickerViewController(
+                forOpeningContentTypes: contentTypes,
+                asCopy: asCopy
+            )
+            picker.allowsMultipleSelection = allowsMultipleSelection
+            picker.shouldShowFileExtensions = true
+            return picker
         }
     }
 
@@ -53,13 +61,8 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
     }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: mode.contentTypes,
-            asCopy: mode.asCopy
-        )
+        let picker = mode.makeController()
         picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = mode.allowsMultipleSelection
-        picker.shouldShowFileExtensions = true
         return picker
     }
 

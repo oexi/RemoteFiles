@@ -8,24 +8,10 @@ struct BrowserView: View {
     @EnvironmentObject private var clipboard: FileOperationClipboard
     @EnvironmentObject private var history: LocationHistoryStore
 
-    private enum ImportSelection {
-        case files
-        case folder
-
-        var pickerMode: SystemDocumentPicker.Mode {
-            switch self {
-            case .files: return .files
-            case .folder: return .folder
-            }
-        }
-    }
-
     @StateObject private var model: BrowserViewModel
     @State private var showingFolderPrompt = false
     @State private var newFolderName = ""
-    @State private var importSelection: ImportSelection = .files
-    @State private var showingImporter = false
-    @State private var pickedImportURLs: [URL] = []
+    @State private var uploadPicker = UploadPicker()
     @State private var searchText = ""
     @State private var renameItem: RemoteItem?
     @State private var renameText = ""
@@ -89,12 +75,10 @@ struct BrowserView: View {
                         }
                         if model.capabilities.contains(.write) {
                             Button("Upload Files", systemImage: "square.and.arrow.up") {
-                                importSelection = .files
-                                showingImporter = true
+                                presentUploadPicker(.files)
                             }
                             Button("Upload Folder", systemImage: "square.and.arrow.up.on.square") {
-                                importSelection = .folder
-                                showingImporter = true
+                                presentUploadPicker(.folder)
                             }
                         }
                     } label: { Image(systemName: "ellipsis.circle") }
@@ -222,29 +206,14 @@ struct BrowserView: View {
         .alert("Error", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("OK") { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "Unknown error") }
-        .sheet(isPresented: $showingImporter, onDismiss: startPickedUpload) {
-            SystemDocumentPicker(
-                mode: importSelection.pickerMode,
-                onPick: { urls in
-                    pickedImportURLs = urls
-                    showingImporter = false
-                },
-                onCancel: {
-                    showingImporter = false
-                }
-            )
-            .ignoresSafeArea()
-        }
     }
 
-    /// Starts the upload only once the document picker has finished
-    /// dismissing, so a name-conflict prompt is not presented (and lost)
-    /// while the picker sheet is still animating away.
-    private func startPickedUpload() {
-        let urls = pickedImportURLs
-        pickedImportURLs = []
-        guard !urls.isEmpty else { return }
-        Task { await model.upload(localURLs: urls, transfers: transfers) }
+    private func presentUploadPicker(_ mode: SystemDocumentPicker.Mode) {
+        searchFocused = false
+        uploadPicker.present(mode: mode) { urls in
+            guard !urls.isEmpty else { return }
+            Task { await model.upload(localURLs: urls, transfers: transfers) }
+        }
     }
 
     var body: some View {

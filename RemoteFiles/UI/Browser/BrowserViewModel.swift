@@ -700,6 +700,12 @@ final class BrowserViewModel: ObservableObject {
         return (files, folders)
     }
 
+    private nonisolated static func isAppTemporaryFile(_ url: URL) -> Bool {
+        let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL.path
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return path.hasPrefix(temporary.hasSuffix("/") ? temporary : temporary + "/")
+    }
+
     private nonisolated static func stageImportedURL(_ sourceURL: URL, under stagingRoot: URL) throws -> URL {
         let access = sourceURL.startAccessingSecurityScopedResource()
         defer {
@@ -709,6 +715,14 @@ final class BrowserViewModel: ObservableObject {
         let container = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
         let destination = container.appendingPathComponent(sourceURL.lastPathComponent)
+
+        // "Upload Files" opens the picker in copy mode, which already put a
+        // private copy in the app's temporary folder. Take that copy over
+        // instead of duplicating a possibly large file before uploading.
+        if isAppTemporaryFile(sourceURL) {
+            try FileManager.default.moveItem(at: sourceURL, to: destination)
+            return destination
+        }
 
         var coordinationError: NSError?
         var copyError: Error?
