@@ -32,11 +32,12 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
 
         var allowsMultipleSelection: Bool {
             switch self {
-            case .files, .folder:
-                // In folder mode, Open with nothing checked still picks the
-                // folder being viewed.
+            case .files:
                 return true
-            case .privateKey:
+            case .folder, .privateKey:
+                // With multiple selection the folder picker shows checkboxes,
+                // and Open never returned the folder being viewed, so
+                // nothing happened. Single selection makes Open pick it.
                 return false
             }
         }
