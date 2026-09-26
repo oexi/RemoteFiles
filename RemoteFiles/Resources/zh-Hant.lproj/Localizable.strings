@@ -231,3 +231,4 @@
 "The video player could not be started." = "無法啟動影片播放器。";
 "The file could not be played (%@)." = "無法播放此檔案（%@）。";
 "Playback Position" = "播放進度";
+"Close" = "關閉";

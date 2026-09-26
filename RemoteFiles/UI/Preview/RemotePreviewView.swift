@@ -21,7 +21,7 @@ struct RemotePreviewView: View {
     var body: some View {
         Group {
             if let streamSource {
-                MPVPlayerView(media: .remote(streamSource))
+                MPVPlayerView(media: .remote(streamSource), title: item.name)
             } else {
                 downloadedPreview
             }
@@ -64,7 +64,7 @@ struct RemotePreviewView: View {
         Group {
             if let localURL {
                 if MPVPlayer.canPlay(fileName: item.name) {
-                    MPVPlayerView(media: .local(localURL))
+                    MPVPlayerView(media: .local(localURL), title: item.name)
                 } else {
                     QuickLookView(url: localURL)
                 }

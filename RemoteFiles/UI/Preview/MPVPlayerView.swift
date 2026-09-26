@@ -3,14 +3,18 @@ import UIKit
 
 /// Full-screen audio and video preview, played with libmpv.
 struct MPVPlayerView: View {
+    let title: String
+
     @StateObject private var player: MPVPlayer
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
 
     @State private var controlsVisible = true
     @State private var scrubPosition: Double?
     @State private var lastInteraction = Date()
 
-    init(media: MPVPlayer.Media) {
+    init(media: MPVPlayer.Media, title: String) {
+        self.title = title
         _player = StateObject(wrappedValue: MPVPlayer(media: media))
     }
 
@@ -41,6 +45,10 @@ struct MPVPlayerView: View {
             if let message = player.errorMessage {
                 ContentUnavailableView("Preview unavailable", systemImage: "exclamationmark.triangle", description: Text(message))
                     .foregroundStyle(.white)
+                VStack {
+                    topBar
+                    Spacer()
+                }
             } else {
                 overlay
             }
@@ -62,7 +70,9 @@ struct MPVPlayerView: View {
                 .foregroundStyle(.white.opacity(0.35))
                 .fullScreenCentered()
         }
-        if player.isBuffering {
+        // While the controls are shown the buttons stay put, so repeated taps never land
+        // on the empty screen behind them; buffering shows in the timeline instead.
+        if player.isBuffering, !controlsVisible {
             ProgressView()
                 .tint(.white)
                 .controlSize(.large)
@@ -73,6 +83,7 @@ struct MPVPlayerView: View {
                 .fullScreenCentered()
                 .transition(.opacity)
             VStack {
+                topBar
                 Spacer()
                 timeline
             }
@@ -80,14 +91,44 @@ struct MPVPlayerView: View {
         }
     }
 
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(Text("Close"))
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.6), radius: 4)
+        .padding(.horizontal, 8)
+        .background(alignment: .top) {
+            LinearGradient(colors: [.black.opacity(0.55), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 140)
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+        }
+    }
+
     private var transportButtons: some View {
-        HStack(spacing: 48) {
+        HStack(spacing: 32) {
             Button {
                 player.skip(by: -10)
                 lastInteraction = Date()
             } label: {
                 Image(systemName: "gobackward.10")
                     .font(.title)
+                    .frame(width: 64, height: 64)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel(Text("Skip Back 10 Seconds"))
 
@@ -97,7 +138,8 @@ struct MPVPlayerView: View {
             } label: {
                 Image(systemName: player.isPaused ? "play.fill" : "pause.fill")
                     .font(.system(size: 40))
-                    .frame(width: 56, height: 56)
+                    .frame(width: 72, height: 72)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel(player.isPaused ? Text("Play") : Text("Pause"))
 
@@ -107,17 +149,30 @@ struct MPVPlayerView: View {
             } label: {
                 Image(systemName: "goforward.10")
                     .font(.title)
+                    .frame(width: 64, height: 64)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel(Text("Skip Forward 10 Seconds"))
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.5), radius: 6)
-        .opacity(player.isBuffering ? 0 : 1)
+        // Taps just beside the buttons keep the controls up instead of hiding them.
+        .padding(24)
+        .contentShape(Rectangle())
+        .onTapGesture { lastInteraction = Date() }
     }
 
     private var timeline: some View {
         HStack(spacing: 12) {
-            Text(MPVPlayer.timeString(scrubPosition ?? player.position))
+            ZStack {
+                Text(MPVPlayer.timeString(scrubPosition ?? player.position))
+                    .opacity(player.isBuffering ? 0 : 1)
+                if player.isBuffering {
+                    ProgressView()
+                        .tint(.white)
+                        .controlSize(.small)
+                }
+            }
             PlaybackScrubber(
                 position: player.position,
                 duration: player.duration,
@@ -148,12 +203,13 @@ private extension View {
 }
 
 extension View {
-    /// Hides the tab bar while media plays, and the navigation bar, status bar and
-    /// home indicator whenever the player's controls are hidden.
+    /// Hides the app's tab and navigation bars while media plays (the player draws its own
+    /// close button and title), and the status bar and home indicator whenever the
+    /// player's controls are hidden.
     func playbackChrome(visible: Bool) -> some View {
         self
             .toolbar(.hidden, for: .tabBar)
-            .toolbar(visible ? .visible : .hidden, for: .navigationBar)
+            .toolbar(.hidden, for: .navigationBar)
             .statusBarHidden(!visible)
             .persistentSystemOverlays(visible ? .automatic : .hidden)
     }

@@ -25,7 +25,7 @@ struct OfflineDetailView: View {
             } else if EditorLanguage.isEditable(fileName: item.fileName) {
                 OfflineEditorView(item: item)
             } else if MPVPlayer.canPlay(fileName: item.fileName) {
-                MPVPlayerView(media: .local(url))
+                MPVPlayerView(media: .local(url), title: item.fileName)
             } else {
                 QuickLookView(url: url)
             }
@@ -230,7 +230,7 @@ private struct OfflineLocalFileDetailView: View {
                     onSaved: { offline.fileDidChange(offlineItem) }
                 )
             } else if MPVPlayer.canPlay(fileName: url.lastPathComponent) {
-                MPVPlayerView(media: .local(url))
+                MPVPlayerView(media: .local(url), title: url.lastPathComponent)
                     .navigationTitle(url.lastPathComponent)
                     .navigationBarTitleDisplayMode(.inline)
             } else {
