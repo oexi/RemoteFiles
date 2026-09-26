@@ -574,9 +574,14 @@ final class BrowserViewModel: ObservableObject {
 
     static func uploadConcurrency(for protocolType: RemoteProtocol) -> Int {
         switch protocolType {
-        case .sftp, .smb, .webdav:
+        case .sftp, .webdav:
             // These providers multiplex concurrent requests over one session.
             return 3
+        case .smb:
+            // SMBClient hands out message IDs and credits without locking or
+            // tracking the server's credit grant; parallel 8 MB writes made
+            // the server drop the connection and fail every file in flight.
+            return 1
         case .ftp, .ftps, .nfs:
             return 1
         }
