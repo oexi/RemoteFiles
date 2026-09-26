@@ -390,6 +390,10 @@ final class MPVCore: @unchecked Sendable {
             ("gpu-api", "vulkan"),
             ("gpu-context", "moltenvk"),
             ("hwdec", "videotoolbox"),
+            // mpv's audiounit output reconfigures the audio session with MixWithOthers
+            // unless audio is exclusive, and mixable sessions never become the Now
+            // Playing app (lock screen, Dynamic Island, Control Center).
+            ("audio-exclusive", "yes"),
             // Video is enabled once its size is known; see MPVPlayer.startVideoIfNeeded.
             ("vid", "no"),
             ("keep-open", "yes"),
