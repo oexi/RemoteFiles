@@ -22,9 +22,15 @@ final class UploadPicker: NSObject, UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let onPick else { return }
         self.onPick = nil
+        // The copying file picker closes itself, but the folder picker stays
+        // on screen after Open; left there it hid the conflict dialog and
+        // Open looked dead. Close it here unless it is already closing.
+        if controller.presentingViewController != nil, !controller.isBeingDismissed {
+            controller.dismiss(animated: true) { onPick(urls) }
+            return
+        }
         Task { @MainActor in
-            // The picker dismisses itself around this callback; wait until it
-            // is gone (bounded, in case it stays up) before continuing.
+            // Already closing: wait until it is gone (bounded) before continuing.
             for _ in 0..<60 {
                 guard controller.presentingViewController != nil || controller.isBeingDismissed else { break }
                 try? await Task.sleep(nanoseconds: 50_000_000)
