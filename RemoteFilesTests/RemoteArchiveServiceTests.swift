@@ -130,6 +130,39 @@ final class RemoteArchiveServiceTests: XCTestCase {
         XCTAssertEqual(provider.createdDirectoryPaths.first, "/payload 3")
         XCTAssertEqual(provider.uploadedPaths, ["/payload 3/payload/nested/note.txt"])
     }
+
+    func testProgressMovesThroughEachPhaseInOrder() async throws {
+        let fixture = try ArchiveFixture()
+        defer { fixture.remove() }
+
+        let provider = ArchiveTestProvider(archiveData: fixture.archiveData)
+        let recorder = ProgressRecorder()
+
+        try await RemoteArchiveService.extractHere(item: fixture.item, provider: provider) { progress in
+            recorder.append(progress)
+        }
+
+        let values = recorder.values
+        let order: [ArchiveExtractionProgress.Phase] = [.downloading, .extracting, .uploading]
+        let ranks = values.compactMap { order.firstIndex(of: $0.phase) }
+        XCTAssertEqual(values.first, ArchiveExtractionProgress(phase: .downloading, fraction: nil))
+        XCTAssertTrue(values.contains(ArchiveExtractionProgress(phase: .extracting, fraction: 1)))
+        XCTAssertEqual(values.last, ArchiveExtractionProgress(phase: .uploading, fraction: 1))
+        XCTAssertEqual(ranks, ranks.sorted())
+    }
+}
+
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [ArchiveExtractionProgress] = []
+
+    var values: [ArchiveExtractionProgress] {
+        lock.withLock { storage }
+    }
+
+    func append(_ progress: ArchiveExtractionProgress) {
+        lock.withLock { storage.append(progress) }
+    }
 }
 
 private final class ArchiveFixture {

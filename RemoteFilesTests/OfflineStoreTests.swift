@@ -174,6 +174,51 @@ final class OfflineStoreTests: XCTestCase {
         XCTAssertEqual(try fixture.offlineEntries(), [])
     }
 
+    func testExtractArchiveIntoFolderKeepsTreeInOneOfflineFolder() async throws {
+        let fixture = try OfflineStoreFixture()
+        defer { fixture.remove() }
+        let archive = try fixture.seedSevenZipArchive()
+
+        let store = OfflineStore(root: fixture.root)
+        let inserted = try await store.extractArchive(archive, intoFolder: true)
+
+        XCTAssertEqual(inserted.map(\.fileName), ["sample"])
+        XCTAssertEqual(inserted.map(\.directory), [true])
+        let folder = store.localURL(for: inserted[0])
+        XCTAssertEqual(
+            try String(contentsOf: folder.appendingPathComponent("folder/a.txt"), encoding: .utf8),
+            "hello 7z"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: folder.appendingPathComponent("b.txt"), encoding: .utf8),
+            "top level"
+        )
+        XCTAssertEqual(inserted[0].size, 17)
+        XCTAssertEqual(store.items.map(\.fileName), ["sample", "sample.7z"])
+
+        let second = try await store.extractArchive(archive, intoFolder: true)
+        XCTAssertEqual(second.map(\.fileName), ["sample 2"])
+    }
+
+    func testExtractArchiveIntoCurrentFolderAddsEachTopLevelItem() async throws {
+        let fixture = try OfflineStoreFixture()
+        defer { fixture.remove() }
+        let archive = try fixture.seedSevenZipArchive()
+
+        let store = OfflineStore(root: fixture.root)
+        let inserted = try await store.extractArchive(archive)
+
+        XCTAssertEqual(inserted.map(\.fileName), ["b.txt", "folder"])
+        XCTAssertEqual(inserted.map(\.directory), [false, true])
+        XCTAssertEqual(
+            try String(contentsOf: store.localURL(for: inserted[1]).appendingPathComponent("a.txt"), encoding: .utf8),
+            "hello 7z"
+        )
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: store.localURL(for: inserted[1]).appendingPathComponent("empty.txt").path
+        ))
+    }
+
     private func waitUntil(_ condition: @escaping () -> Bool) async throws {
         for _ in 0..<200 {
             if condition() { return }
@@ -201,6 +246,22 @@ private struct OfflineStoreFixture {
     func seed(_ items: [OfflineItem], data: Data) throws {
         try data.write(to: root.appendingPathComponent(items[0].storedFileName))
         try JSONEncoder().encode(items).write(to: indexURL)
+    }
+
+    func seedSevenZipArchive() throws -> OfflineItem {
+        let profile = ConnectionProfile.empty(for: .sftp)
+        let item = OfflineItem(
+            id: UUID(),
+            profileID: profile.id,
+            profileName: profile.name,
+            remotePath: "/sample.7z",
+            fileName: "sample.7z",
+            storedFileName: "archive-sample.7z",
+            size: Int64(SevenZipFixtures.lzma2.count),
+            pinnedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        try seed([item], data: SevenZipFixtures.lzma2)
+        return item
     }
 
     func offlineEntries() throws -> [String] {

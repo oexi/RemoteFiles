@@ -100,6 +100,8 @@
 "Extract Here" = "在此解压";
 "Extract to Offline" = "解压到离线";
 "Extracting…" = "正在解压…";
+"Downloading archive…" = "正在下载压缩包…";
+"Uploading extracted files…" = "正在上传解压的文件…";
 "Search this folder" = "搜索此文件夹";
 "Folder name" = "文件夹名称";
 "Error" = "错误";

@@ -7,7 +7,7 @@ struct ArchiveDetailView: View {
     @State private var nodes: [ArchiveTreeNode] = []
     @State private var archiveURL: URL?
     @State private var loading = true
-    @State private var extracting = false
+    @State private var extractionProgress: ArchiveExtractionProgress?
     @State private var showingExtractChoice = false
     @State private var message: String?
 
@@ -25,7 +25,9 @@ struct ArchiveDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button(extractionActionTitle) {
+                // An icon with a fixed label: a text title that changed while extracting
+                // resized the item and shifted the navigation title.
+                Button("Extract Here", systemImage: "archivebox") {
                     // Several top-level items would scatter into the current folder, so ask first.
                     if nodes.count > 1 {
                         showingExtractChoice = true
@@ -33,32 +35,21 @@ struct ArchiveDetailView: View {
                         Task { await extract(intoFolder: false) }
                     }
                 }
-                .disabled(extracting || loading || archiveURL == nil)
+                .disabled(extractionProgress != nil || loading || archiveURL == nil)
             }
         }
-        .confirmationDialog(
-            "Extract Archive",
-            isPresented: $showingExtractChoice,
-            titleVisibility: .visible
-        ) {
-            Button("Extract to “\(ArchiveManager.suggestedFolderName(for: item.name))”") {
-                Task { await extract(intoFolder: true) }
+        .archiveExtractionChoice(isPresented: $showingExtractChoice, archiveName: item.name) { intoFolder in
+            Task { await extract(intoFolder: intoFolder) }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let extractionProgress {
+                ArchiveExtractionProgressView(progress: extractionProgress)
             }
-            Button("Extract into Current Folder") {
-                Task { await extract(intoFolder: false) }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This archive has several items at its top level. Extract them into a new folder?")
         }
         .task { await load() }
         .alert("Archive", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("OK") { message = nil }
         } message: { Text(message ?? "") }
-    }
-
-    private var extractionActionTitle: LocalizedStringKey {
-        extracting ? "Extracting…" : "Extract Here"
     }
 
     private func load() async {
@@ -76,14 +67,21 @@ struct ArchiveDetailView: View {
     }
 
     private func extract(intoFolder: Bool) async {
-        extracting = true
-        defer { extracting = false }
+        extractionProgress = ArchiveExtractionProgress(phase: .downloading, fraction: nil)
+        defer { extractionProgress = nil }
         do {
             let destination = try await RemoteArchiveService.extractHere(
                 item: item,
                 provider: provider,
                 intoFolder: intoFolder
-            )
+            ) { progress in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        // A report can arrive after the extraction has already finished.
+                        if extractionProgress != nil { extractionProgress = progress }
+                    }
+                }
+            }
             if intoFolder {
                 message = String(
                     localized: "Extracted to “\((destination as NSString).lastPathComponent)”."

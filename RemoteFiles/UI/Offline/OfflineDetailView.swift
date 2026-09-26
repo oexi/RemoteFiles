@@ -250,6 +250,8 @@ private struct OfflineArchiveContentView: View {
 
     @State private var nodes: [ArchiveTreeNode] = []
     @State private var loading = true
+    @State private var showingExtractChoice = false
+    @State private var extractionProgress: Double?
 
     var body: some View {
         Group {
@@ -265,17 +267,29 @@ private struct OfflineArchiveContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button(extractionActionTitle, systemImage: "archivebox") {
-                    Task { await extract() }
+                Button("Extract to Offline", systemImage: "archivebox") {
+                    // Same rule as "Extract Here" in the browser: several top-level items
+                    // would scatter into the Offline list, so ask first.
+                    if nodes.count > 1 {
+                        showingExtractChoice = true
+                    } else {
+                        Task { await extract(intoFolder: false) }
+                    }
                 }
-                .disabled(loading || working)
+                .disabled(loading || working || nodes.isEmpty)
+            }
+        }
+        .archiveExtractionChoice(isPresented: $showingExtractChoice, archiveName: item.fileName) { intoFolder in
+            Task { await extract(intoFolder: intoFolder) }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let extractionProgress {
+                ArchiveExtractionProgressView(
+                    progress: ArchiveExtractionProgress(phase: .extracting, fraction: extractionProgress)
+                )
             }
         }
         .task { await load() }
-    }
-
-    private var extractionActionTitle: LocalizedStringKey {
-        working ? "Extracting…" : "Extract to Offline"
     }
 
     private func load() async {
@@ -291,12 +305,27 @@ private struct OfflineArchiveContentView: View {
         loading = false
     }
 
-    private func extract() async {
+    private func extract(intoFolder: Bool) async {
         working = true
-        defer { working = false }
+        extractionProgress = 0
+        defer {
+            working = false
+            extractionProgress = nil
+        }
         do {
-            let count = try await offline.extractArchive(item)
-            message = "Extracted \(count) file(s) to Offline."
+            let inserted = try await offline.extractArchive(item, intoFolder: intoFolder) { fraction in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        // A report can arrive after the extraction has already finished.
+                        if extractionProgress != nil { extractionProgress = fraction }
+                    }
+                }
+            }
+            if intoFolder, let folder = inserted.first {
+                message = String(localized: "Extracted to “\(folder.fileName)”.")
+            } else {
+                message = String(localized: "Archive extracted successfully.")
+            }
         } catch {
             message = error.localizedDescription
         }

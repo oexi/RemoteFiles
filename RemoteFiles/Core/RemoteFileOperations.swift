@@ -113,6 +113,149 @@ enum RemoteFileOperations {
         }
     }
 
+    /// Renames `source` onto the existing file at `destination` for servers whose rename never
+    /// replaces its target (SFTP v3 RENAME, SMB without ReplaceIfExists). The old file is moved
+    /// aside first, put back if the final rename fails, and deleted once the new file is in place.
+    static func renameReplacingFile(
+        from source: String,
+        to destination: String,
+        rename: (_ from: String, _ to: String) async throws -> Void,
+        remove: (_ path: String) async throws -> Void
+    ) async throws {
+        let token = UUID().uuidString.lowercased()
+        let aside = RemotePath.join(RemotePath.parent(destination), ".remotefiles-\(token).replaced")
+        try await rename(destination, aside)
+        do {
+            try await rename(source, destination)
+        } catch {
+            try? await rename(aside, destination)
+            throw error
+        }
+        try? await remove(aside)
+    }
+
+    /// Downloads a file and reports `(receivedBytes, totalBytes)` as it arrives. Providers
+    /// with chunked reads are read piece by piece; others use their native download, which
+    /// reports nothing until it returns.
+    static func download(
+        _ item: RemoteItem,
+        from provider: any RemoteFileProvider,
+        to localURL: URL,
+        progress: (_ receivedBytes: UInt64, _ totalBytes: UInt64) -> Void
+    ) async throws {
+        var canReadChunks = provider is any RemoteChunkReadableProvider
+        if canReadChunks, let probing = provider as? any RemoteChunkReadSupportProbing {
+            canReadChunks = try await probing.supportsChunkedReads(path: item.path)
+        }
+        guard canReadChunks, let reader = provider as? any RemoteChunkReadableProvider else {
+            try await provider.download(path: item.path, to: localURL)
+            return
+        }
+        // The listing's size can be stale, and a chunked read must know exactly where to stop.
+        let size: Int64?
+        do {
+            size = try await provider.attributes(path: item.path).size
+        } catch RemoteProviderError.unsupported {
+            size = item.size
+        }
+        guard let size, size >= 0 else {
+            try await provider.download(path: item.path, to: localURL)
+            return
+        }
+
+        let totalBytes = UInt64(size)
+        guard FileManager.default.createFile(atPath: localURL.path, contents: nil) else {
+            throw RemoteProviderError.invalidResponse("Unable to create \(localURL.lastPathComponent).")
+        }
+        let handle = try FileHandle(forWritingTo: localURL)
+        defer { try? handle.close() }
+        var session: (any RemoteChunkReadSession)?
+        do {
+            session = try await reader.openReadSession(path: item.path, offset: 0)
+            var offset: UInt64 = 0
+            progress(0, totalBytes)
+            while offset < totalBytes {
+                try Task.checkCancellation()
+                let length = Int(min(UInt64(transferChunkSize), totalBytes - offset))
+                let data: Data
+                if let session {
+                    data = try await session.read(length: length)
+                } else {
+                    data = try await reader.readChunk(path: item.path, offset: offset, length: length)
+                }
+                guard !data.isEmpty, data.count <= length else {
+                    throw RemoteProviderError.invalidResponse("The source ended before the expected file size was reached.")
+                }
+                try handle.write(contentsOf: data)
+                offset += UInt64(data.count)
+                progress(offset, totalBytes)
+            }
+            await session?.close()
+        } catch {
+            await session?.close()
+            try? FileManager.default.removeItem(at: localURL)
+            throw error
+        }
+    }
+
+    /// Uploads a file to a path that must not exist yet and reports the bytes sent so far.
+    /// Providers with chunked writes send it piece by piece; others use their native upload,
+    /// which reports nothing until it returns.
+    static func uploadNewFile(
+        from localURL: URL,
+        to path: String,
+        provider: any RemoteFileProvider,
+        progress: (_ sentBytes: UInt64) -> Void
+    ) async throws {
+        guard let writer = provider as? any RemoteChunkWritableProvider else {
+            try await provider.upload(from: localURL, to: path, overwrite: false)
+            return
+        }
+        let size = try localURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        let totalBytes = UInt64(max(0, size))
+        let handle = try FileHandle(forReadingFrom: localURL)
+        defer { try? handle.close() }
+
+        // Both write paths create the file exclusively, so after this point the remote file
+        // is ours and may be removed if the upload fails.
+        let session = try await writer.openWriteSession(path: path, overwrite: false, resumeOffset: 0)?.session
+        if session == nil {
+            _ = try await writer.prepareChunkedUpload(path: path, overwrite: false, resumeOffset: 0)
+        }
+        do {
+            var offset: UInt64 = 0
+            while offset < totalBytes {
+                try Task.checkCancellation()
+                let length = Int(min(UInt64(transferChunkSize), totalBytes - offset))
+                guard let data = try handle.read(upToCount: length), !data.isEmpty else {
+                    throw RemoteProviderError.invalidResponse("The local file ended before the expected size was reached.")
+                }
+                if let session {
+                    try await session.write(data, at: offset)
+                } else {
+                    try await writer.writeChunk(path: path, data: data, offset: offset)
+                }
+                offset += UInt64(data.count)
+                progress(offset)
+            }
+            if let session {
+                try await session.finish()
+            } else {
+                try await writer.finishChunkedUpload(path: path)
+            }
+        } catch {
+            if let session {
+                await session.abort()
+            } else {
+                await writer.abortChunkedUpload(path: path)
+            }
+            try? await provider.remove(path: path, isDirectory: false)
+            throw error
+        }
+    }
+
+    private static let transferChunkSize = 1024 * 1024
+
     static func availablePastePath(
         for item: RemoteItem,
         in parent: String,

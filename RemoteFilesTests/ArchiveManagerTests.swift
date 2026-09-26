@@ -243,6 +243,121 @@ final class ArchiveManagerTests: XCTestCase {
         ))
     }
 
+    func testSevenZipWithLZMA2ListsAndExtracts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesSevenZipTest-\(UUID().uuidString)", isDirectory: true)
+        let archive = root.appendingPathComponent("sample.7z")
+        let destination = root.appendingPathComponent("extracted", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try SevenZipFixtures.lzma2.write(to: archive)
+
+        let entries = try ArchiveManager.list(archive, originalName: "sample.7z")
+        XCTAssertEqual(
+            Set(entries.filter { $0.kind == .file }.map(\.path)),
+            ["b.txt", "folder/a.txt", "folder/empty.txt"]
+        )
+        XCTAssertEqual(entries.first { $0.path == "folder" }?.kind, .directory)
+
+        var reported: [Double] = []
+        try ArchiveManager.extract(archive, originalName: "sample.7z", to: destination) { reported.append($0) }
+
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("folder/a.txt"), encoding: .utf8),
+            "hello 7z"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("b.txt"), encoding: .utf8),
+            "top level"
+        )
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("folder/empty.txt")), Data())
+        XCTAssertEqual(reported.last, 1)
+        XCTAssertEqual(reported, reported.sorted())
+
+        let preview = try ArchiveManager.extractEntry(
+            "folder/a.txt",
+            from: archive,
+            originalName: "sample.7z",
+            to: root.appendingPathComponent("preview", isDirectory: true)
+        )
+        XCTAssertEqual(try String(contentsOf: preview, encoding: .utf8), "hello 7z")
+    }
+
+    func testSevenZipMethodWithoutSWCompressionSupportUsesLibArchive() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesSevenZipPPMdTest-\(UUID().uuidString)", isDirectory: true)
+        let archive = root.appendingPathComponent("ppmd.7z")
+        let destination = root.appendingPathComponent("extracted", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try SevenZipFixtures.ppmd.write(to: archive)
+
+        let entries = try ArchiveManager.list(archive, originalName: "ppmd.7z")
+        XCTAssertEqual(
+            Set(entries.filter { $0.kind == .file }.map(\.path)),
+            ["b.txt", "folder/a.txt", "folder/empty.txt"]
+        )
+        try ArchiveManager.extract(archive, originalName: "ppmd.7z", to: destination)
+
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("folder/a.txt"), encoding: .utf8),
+            "hello 7z"
+        )
+        XCTAssertEqual(
+            try String(contentsOf: destination.appendingPathComponent("b.txt"), encoding: .utf8),
+            "top level"
+        )
+    }
+
+    func testZipExtractionReportsProgressUpToCompletion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFilesZipProgressTest-\(UUID().uuidString)", isDirectory: true)
+        let source = root.appendingPathComponent("payload", isDirectory: true)
+        let archive = root.appendingPathComponent("payload.zip")
+        let destination = root.appendingPathComponent("extracted", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data(repeating: 0x61, count: 200_000).write(to: source.appendingPathComponent("a.txt"))
+        try Data(repeating: 0x62, count: 100_000).write(to: source.appendingPathComponent("b.txt"))
+        try ArchiveManager.createZIP(from: source, at: archive)
+
+        var reported: [Double] = []
+        try ArchiveManager.extract(archive, originalName: "payload.zip", to: destination) { reported.append($0) }
+
+        XCTAssertGreaterThan(reported.count, 2)
+        XCTAssertEqual(reported.last, 1)
+        XCTAssertEqual(reported, reported.sorted())
+        XCTAssertEqual(
+            try Data(contentsOf: destination.appendingPathComponent("payload/a.txt")).count,
+            200_000
+        )
+    }
+
+    func testByteProgressReporterReportsAtMostOncePerPercent() {
+        var reported: [Double] = []
+        let reporter = ByteProgressReporter(totalBytes: 1_000) { reported.append($0) }
+        for _ in 0..<1_000 {
+            reporter.advance(by: 1)
+        }
+        reporter.finish()
+
+        XCTAssertEqual(reported.first, 0.001)
+        XCTAssertEqual(reported.last, 1)
+        XCTAssertLessThanOrEqual(reported.count, 101)
+        XCTAssertEqual(reported, reported.sorted())
+    }
+
+    func testExtractionFolderNameIsNumberedWhenTaken() {
+        XCTAssertEqual(ArchiveManager.extractionFolderName(for: "photos.zip", taken: []), "photos")
+        XCTAssertEqual(
+            ArchiveManager.extractionFolderName(for: "photos.zip", taken: ["Photos", "photos 2"]),
+            "photos 3"
+        )
+    }
+
     func testSuggestedFolderNameStripsArchiveExtensions() {
         XCTAssertEqual(ArchiveManager.suggestedFolderName(for: "photos.zip"), "photos")
         XCTAssertEqual(ArchiveManager.suggestedFolderName(for: "src-1.2.tar.gz"), "src-1.2")
@@ -304,4 +419,25 @@ final class ArchiveManagerTests: XCTestCase {
         let field = String(repeating: "0", count: max(0, length - 1 - octal.count)) + octal + "\0"
         header.replaceSubrange(offset..<(offset + length), with: field.utf8)
     }
+}
+
+/// Archives made with the `7z` command-line tool. Both hold `folder/a.txt` ("hello 7z"),
+/// an empty `folder/empty.txt` and `b.txt` ("top level").
+enum SevenZipFixtures {
+    /// 7-Zip's default output: LZMA2 data and an LZMA-compressed header, which the bundled
+    /// libarchive (built without liblzma) cannot read.
+    static let lzma2 = Data(base64Encoded:
+        "N3q8ryccAARU99VdkgAAAAAAAAAhAAAAAAAAAIJMVAUBABB0b3AgbGV2ZWxoZWxsbyA3egAAAIEzB64Pz0tvjAfIQ39Bsfr9" +
+        "5GF56W089iChtzmlbPsyF8NNC7G2toBMD06ol0eGhYWZJxcEiu/mAHNUvjgtDUv+OQZ73pVK6yD1i1PI4TtHTbeIPqz6l/VS" +
+        "Hg4qSJfcmdM6/RTbrA56Kq/WYBUR7aiHHJOTxi1H8AAAABcGFQEJfQAHCwEAASMDAQEFXQAQAAAMgMYKAXRMfGYAAA=="
+    )!
+
+    /// PPMd data with a plain header (`-m0=PPMd -mhc=off`). SWCompression has no PPMd decoder,
+    /// so libarchive reads this one.
+    static let ppmd = Data(base64Encoded:
+        "N3q8ryccAARCd1K0FAAAAAAAAADWAAAAAAAAAPx+xMAAc/lUU70jOPPzTFY9TxYTdHUQAAEEBgABCRQABwsBAAEjAwQBBQYA" +
+        "AAEADBEACA0CCQkKAXPagfXry4nnAAAFBA4BwA8BQBkIAAAAAAAAAAARVwBmAG8AbABkAGUAcgAAAGYAbwBsAGQAZQByAC8A" +
+        "ZQBtAHAAdAB5AC4AdAB4AHQAAABiAC4AdAB4AHQAAABmAG8AbABkAGUAcgAvAGEALgB0AHgAdAAAABkEAAAAABQiAQDjph5f" +
+        "gk3dAeOmHl+CTd0B46YeX4JN3QHjph5fgk3dARUSAQAQgP1BIIC0gSCAtIEggLSBAAA="
+    )!
 }

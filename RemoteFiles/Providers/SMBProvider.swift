@@ -239,14 +239,32 @@ final class SMBProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func move(from: String, to: String, overwrite: Bool) async throws {
-        try await withClient { client in
+        let replacesFile = try await withClient { client in
             let destinationHasFile = try await client.existFile(path: self.smbPath(to))
             let destinationHasDirectory = try await client.existDirectory(path: self.smbPath(to))
             if !overwrite && (destinationHasFile || destinationHasDirectory) {
                 throw RemoteProviderError.conflict("An item already exists at \(to).")
             }
+            // SMB paths are case-insensitive, so a case-only rename sees its own source here.
+            if destinationHasFile, self.smbPath(from).lowercased() != self.smbPath(to).lowercased() {
+                return true
+            }
             try await client.move(from: self.smbPath(from), to: self.smbPath(to))
+            return false
         }
+        guard replacesFile else { return }
+        // SMBClient renames without ReplaceIfExists, so the server answers an existing target
+        // with STATUS_OBJECT_NAME_COLLISION. Move the old file aside first instead.
+        try await RemoteFileOperations.renameReplacingFile(
+            from: from,
+            to: to,
+            rename: { source, destination in
+                try await self.withClient { client in
+                    try await client.move(from: self.smbPath(source), to: self.smbPath(destination))
+                }
+            },
+            remove: { try await self.remove(path: $0, isDirectory: false) }
+        )
     }
 
     func accessControl(path: String) async throws -> RemoteAccessControlInfo {

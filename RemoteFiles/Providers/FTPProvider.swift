@@ -179,6 +179,12 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func upload(from localURL: URL, to path: String, overwrite: Bool) async throws {
+        // FilesProvider ignores `overwrite` and STOR always replaces, so refuse an existing
+        // item here. This is check-then-write; FTP has no exclusive-create command to close
+        // the race with another client.
+        if !overwrite, try await existingItem(at: path) != nil {
+            throw RemoteProviderError.conflict("An item already exists at \(RemotePath.normalize(path)).")
+        }
         let _: Void = try await withProviderCancellation { complete, _ in
             self.provider.copyItem(localFile: localURL, to: self.ftpPath(path), overwrite: overwrite) { error in
                 if let error {
@@ -226,8 +232,40 @@ final class FTPProvider: RemoteFileProvider, RemoteChunkReadableProvider, Remote
     }
 
     func move(from: String, to: String, overwrite: Bool) async throws {
+        let source = RemotePath.normalize(from)
+        let destination = RemotePath.normalize(to)
+        let existing = try await existingItem(at: destination)
+        if existing != nil, !overwrite {
+            throw RemoteProviderError.conflict("An item already exists at \(destination).")
+        }
+        // FilesProvider ignores `overwrite`, and whether RNTO replaces an existing file is up
+        // to the server: most Unix servers do, while IIS, FileZilla Server and ProFTPD without
+        // AllowOverwrite refuse. Moving the old file aside first works on all of them. A
+        // case-only rename on a case-insensitive server stays a plain rename.
+        if let existing, !existing.isDirectory, source.lowercased() != destination.lowercased() {
+            try await RemoteFileOperations.renameReplacingFile(
+                from: source,
+                to: destination,
+                rename: { try await self.rename($0, to: $1) },
+                remove: { try await self.remove(path: $0, isDirectory: false) }
+            )
+        } else {
+            try await rename(source, to: destination)
+        }
+    }
+
+    private func rename(_ source: String, to destination: String) async throws {
         try await bridge { completion in
-            _ = provider.moveItem(path: ftpPath(from), to: ftpPath(to), overwrite: overwrite, completionHandler: completion)
+            _ = provider.moveItem(path: ftpPath(source), to: ftpPath(destination), overwrite: false, completionHandler: completion)
+        }
+    }
+
+    private func existingItem(at path: String) async throws -> RemoteItem? {
+        do {
+            return try await attributes(path: path)
+        } catch {
+            guard RemoteProviderError.isNotFound(error) else { throw error }
+            return nil
         }
     }
 

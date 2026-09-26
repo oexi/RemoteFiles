@@ -100,6 +100,8 @@
 "Extract Here" = "Extract Here";
 "Extract to Offline" = "Extract to Offline";
 "Extracting…" = "Extracting…";
+"Downloading archive…" = "Downloading archive…";
+"Uploading extracted files…" = "Uploading extracted files…";
 "Search this folder" = "Search this folder";
 "Folder name" = "Folder name";
 "Error" = "Error";

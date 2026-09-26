@@ -1,5 +1,16 @@
 import Foundation
 
+/// What an archive extraction is doing, for the progress bar shown while it runs.
+struct ArchiveExtractionProgress: Equatable, Sendable {
+    enum Phase: Sendable {
+        case downloading, extracting, uploading
+    }
+
+    var phase: Phase
+    /// The completed fraction of the phase, or nil while it cannot be measured.
+    var fraction: Double?
+}
+
 enum RemoteArchiveService {
     /// Extracts `item` next to itself and returns the remote folder that received the files.
     /// With `intoFolder`, a new folder named after the archive is created first; when that name
@@ -8,16 +19,37 @@ enum RemoteArchiveService {
     static func extractHere(
         item: RemoteItem,
         provider: any RemoteFileProvider,
-        intoFolder: Bool = false
+        intoFolder: Bool = false,
+        progress: @escaping @Sendable (ArchiveExtractionProgress) -> Void = { _ in }
     ) async throws -> String {
-        let archiveURL = try await CacheManager.shared.materialize(provider: provider, item: item, forceRefresh: true)
         guard ArchiveManager.canOpen(fileName: item.name) else {
             throw RemoteProviderError.unsupported("This archive format is not supported.")
         }
 
-        let tempRoot = FileManager.default.temporaryDirectory.appendingPathComponent("RemoteFiles-Extract-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: tempRoot) }
-        try ArchiveManager.extract(archiveURL, originalName: item.name, to: tempRoot)
+        // File protocols have no server-side "extract" command, so the archive is always
+        // downloaded, extracted on the device, and the results uploaded next to it.
+        let workRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteFiles-Extract-\(UUID().uuidString)", isDirectory: true)
+        let archiveURL = workRoot.appendingPathComponent("archive")
+        let tempRoot = workRoot.appendingPathComponent("extracted", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workRoot) }
+        try FileManager.default.createDirectory(at: workRoot, withIntermediateDirectories: true)
+
+        progress(ArchiveExtractionProgress(phase: .downloading, fraction: nil))
+        var downloadProgress: ByteProgressReporter?
+        try await RemoteFileOperations.download(item, from: provider, to: archiveURL) { received, total in
+            if downloadProgress == nil {
+                downloadProgress = ByteProgressReporter(totalBytes: total) { fraction in
+                    progress(ArchiveExtractionProgress(phase: .downloading, fraction: fraction))
+                }
+            }
+            downloadProgress?.update(completedBytes: received)
+        }
+        try Task.checkCancellation()
+
+        try ArchiveManager.extract(archiveURL, originalName: item.name, to: tempRoot) { fraction in
+            progress(ArchiveExtractionProgress(phase: .extracting, fraction: fraction))
+        }
 
         var destinationRoot = RemotePath.parent(item.path)
         let (directories, files) = try extractedItems(under: tempRoot)
@@ -34,14 +66,10 @@ enum RemoteArchiveService {
                 throw RemoteProviderError.unsupported("This provider does not support creating extracted folders.")
             }
             let parent = destinationRoot
-            let takenNames = Set(try await provider.list(path: parent).map { $0.name.lowercased() })
-            let baseName = ArchiveManager.suggestedFolderName(for: item.name)
-            var folderName = baseName
-            var suffix = 2
-            while takenNames.contains(folderName.lowercased()) {
-                folderName = "\(baseName) \(suffix)"
-                suffix += 1
-            }
+            let folderName = ArchiveManager.extractionFolderName(
+                for: item.name,
+                taken: try await provider.list(path: parent).map(\.name)
+            )
             destinationRoot = RemotePath.join(parent, folderName)
             try await provider.createDirectory(path: destinationRoot)
         }
@@ -68,13 +96,25 @@ enum RemoteArchiveService {
             try await provider.createDirectory(path: destination)
         }
 
+        let uploadProgress = ByteProgressReporter(totalBytes: plan.files.reduce(0) { $0 + $1.size }) { fraction in
+            progress(ArchiveExtractionProgress(phase: .uploading, fraction: fraction))
+        }
+        uploadProgress.advance(by: 0)
+        var uploadedBytes: UInt64 = 0
         for file in plan.files {
-            try await provider.upload(
+            try Task.checkCancellation()
+            let uploadedBefore = uploadedBytes
+            try await RemoteFileOperations.uploadNewFile(
                 from: file.localURL,
                 to: RemotePath.join(destinationRoot, file.relativePath),
-                overwrite: false
-            )
+                provider: provider
+            ) { sent in
+                uploadProgress.update(completedBytes: uploadedBefore + sent)
+            }
+            uploadedBytes += file.size
+            uploadProgress.update(completedBytes: uploadedBytes)
         }
+        uploadProgress.finish()
         return destinationRoot
     }
 
@@ -82,6 +122,8 @@ enum RemoteArchiveService {
         let localURL: URL
         let relativePath: String
         let kind: RemoteItemKind
+        /// Byte size of a file; 0 for a directory.
+        var size: UInt64 = 0
     }
 
     private struct ExtractionPlan {
@@ -91,12 +133,21 @@ enum RemoteArchiveService {
         var allEntries: [ExtractionEntry] { directories + files }
     }
 
-    private static func extractionPlan(directories: [URL], files: [URL], under root: URL) throws -> ExtractionPlan {
+    private static func extractionPlan(
+        directories: [URL],
+        files: [(url: URL, size: UInt64)],
+        under root: URL
+    ) throws -> ExtractionPlan {
         var paths: [String: RemoteItemKind] = [:]
         var directoryEntries: [ExtractionEntry] = []
         var fileEntries: [ExtractionEntry] = []
 
-        func append(_ url: URL, kind: RemoteItemKind, to entries: inout [ExtractionEntry]) throws {
+        func append(
+            _ url: URL,
+            kind: RemoteItemKind,
+            size: UInt64 = 0,
+            to entries: inout [ExtractionEntry]
+        ) throws {
             let relative = relativePath(url, under: root)
             guard !relative.isEmpty else { return }
             if let previous = paths[relative], previous != kind {
@@ -106,14 +157,14 @@ enum RemoteArchiveService {
             }
             guard paths[relative] == nil else { return }
             paths[relative] = kind
-            entries.append(ExtractionEntry(localURL: url, relativePath: relative, kind: kind))
+            entries.append(ExtractionEntry(localURL: url, relativePath: relative, kind: kind, size: size))
         }
 
         for directory in directories {
             try append(directory, kind: .directory, to: &directoryEntries)
         }
         for file in files {
-            try append(file, kind: .file, to: &fileEntries)
+            try append(file.url, kind: .file, size: file.size, to: &fileEntries)
         }
 
         directoryEntries.sort { lhs, rhs in
@@ -201,17 +252,19 @@ enum RemoteArchiveService {
         }
     }
 
-    private static func extractedItems(under root: URL) throws -> (directories: [URL], files: [URL]) {
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
+    private static func extractedItems(
+        under root: URL
+    ) throws -> (directories: [URL], files: [(url: URL, size: UInt64)]) {
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys) else {
             return ([], [])
         }
         var directories: [URL] = []
-        var files: [URL] = []
+        var files: [(url: URL, size: UInt64)] = []
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: Set(keys))
             if values.isDirectory == true { directories.append(url) }
-            else if values.isRegularFile == true { files.append(url) }
+            else if values.isRegularFile == true { files.append((url, UInt64(max(values.fileSize ?? 0, 0)))) }
         }
         return (directories, files)
     }
