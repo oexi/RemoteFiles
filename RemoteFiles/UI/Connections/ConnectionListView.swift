@@ -6,12 +6,11 @@ struct ConnectionListView: View {
     @State private var editingProfile: ConnectionProfile?
     @State private var showingNewConnection = false
     @State private var pendingDeleteProfile: ConnectionProfile?
+    @AppStorage(AppPreferenceKey.rememberRecentFiles) private var rememberRecentFiles = true
 
     var body: some View {
         NavigationStack {
             List {
-                favoritesSection
-                recentsSection
                 if !store.profiles.isEmpty {
                     Section {
                         ForEach(store.profiles) { profile in
@@ -38,6 +37,8 @@ struct ConnectionListView: View {
                         if hasBookmarks { Text("Servers") }
                     }
                 }
+                favoritesSection
+                recentFilesEntry
             }
             .overlay {
                 if store.profiles.isEmpty {
@@ -112,24 +113,25 @@ struct ConnectionListView: View {
     }
 
     private var hasBookmarks: Bool {
-        !visible(history.favorites).isEmpty || !visible(history.recents).isEmpty
+        !visibleFavorites.isEmpty || recentFileCount > 0
     }
 
-    /// Pairs bookmarks with their connection, hiding those whose connection no longer exists.
-    private func visible(_ bookmarks: [LocationBookmark]) -> [VisibleBookmark] {
-        bookmarks.compactMap { bookmark in
-            store.profiles.first { $0.id == bookmark.profileID }
-                .map { VisibleBookmark(bookmark: bookmark, profile: $0) }
-        }
+    private var visibleFavorites: [VisibleBookmark] {
+        VisibleBookmark.resolve(history.favorites, profiles: store.profiles)
+    }
+
+    private var recentFileCount: Int {
+        guard rememberRecentFiles else { return 0 }
+        return VisibleBookmark.resolve(history.recents, profiles: store.profiles).count
     }
 
     @ViewBuilder
     private var favoritesSection: some View {
-        let favorites = visible(history.favorites)
+        let favorites = visibleFavorites
         if !favorites.isEmpty {
             Section("Favorites") {
                 ForEach(favorites) { entry in
-                    bookmarkLink(entry)
+                    BookmarkLink(entry: entry, detail: .path)
                         .swipeActions(edge: .trailing) {
                             Button(role: .destructive) { history.remove(entry.bookmark) } label: {
                                 Label("Remove", systemImage: "star.slash")
@@ -140,35 +142,61 @@ struct ConnectionListView: View {
         }
     }
 
+    /// Recently opened files stay one tap away without filling the start page.
     @ViewBuilder
-    private var recentsSection: some View {
-        let recents = visible(history.recents)
-        if !recents.isEmpty {
+    private var recentFilesEntry: some View {
+        let count = recentFileCount
+        if count > 0 {
             Section {
-                ForEach(recents.prefix(8)) { entry in
-                    bookmarkLink(entry)
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) { history.remove(entry.bookmark) } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
+                NavigationLink {
+                    RecentFilesView()
+                } label: {
+                    LabeledContent {
+                        Text(count, format: .number)
+                    } label: {
+                        Label {
+                            Text("Recent Files")
+                        } icon: {
+                            IconBadge(systemName: "clock.fill", color: .orange, size: 30)
                         }
-                }
-            } header: {
-                HStack {
-                    Text("Recent")
-                    Spacer()
-                    Button("Clear") { history.clearRecents() }
-                        .font(.caption)
-                        .textCase(nil)
+                    }
                 }
             }
         }
     }
+}
 
-    private func bookmarkLink(_ entry: VisibleBookmark) -> some View {
+/// A bookmark together with its connection.
+struct VisibleBookmark: Identifiable {
+    let bookmark: LocationBookmark
+    let profile: ConnectionProfile
+    var id: UUID { bookmark.id }
+
+    /// Pairs bookmarks with their connection, hiding those whose connection no longer exists.
+    static func resolve(_ bookmarks: [LocationBookmark], profiles: [ConnectionProfile]) -> [VisibleBookmark] {
+        bookmarks.compactMap { bookmark in
+            profiles.first { $0.id == bookmark.profileID }
+                .map { VisibleBookmark(bookmark: bookmark, profile: $0) }
+        }
+    }
+}
+
+/// A row that opens a bookmarked folder or file.
+struct BookmarkLink: View {
+    enum Detail {
+        /// The server and the item's path, for favorites.
+        case path
+        /// The server and when the item was opened, for recent files.
+        case date
+    }
+
+    let entry: VisibleBookmark
+    let detail: Detail
+
+    var body: some View {
         let bookmark = entry.bookmark
         let profile = entry.profile
-        return NavigationLink {
+        NavigationLink {
             if bookmark.isDirectory {
                 BrowserView(profile: profile, startPath: bookmark.path)
             } else {
@@ -180,7 +208,7 @@ struct ConnectionListView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(bookmark.name)
                         .lineLimit(1)
-                    Text(verbatim: "\(profile.name) · \(bookmark.path)")
+                    subtitle(bookmark: bookmark, profile: profile)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -189,16 +217,20 @@ struct ConnectionListView: View {
             }
         }
     }
-}
 
-private struct VisibleBookmark: Identifiable {
-    let bookmark: LocationBookmark
-    let profile: ConnectionProfile
-    var id: UUID { bookmark.id }
+    private func subtitle(bookmark: LocationBookmark, profile: ConnectionProfile) -> Text {
+        switch detail {
+        case .path:
+            return Text(verbatim: "\(profile.name) · \(bookmark.path)")
+        case .date:
+            return Text(verbatim: "\(profile.name) · ")
+                + Text(bookmark.date, format: .relative(presentation: .named))
+        }
+    }
 }
 
 /// Connects to a bookmarked file's server and opens the file directly.
-private struct BookmarkedFileView: View {
+struct BookmarkedFileView: View {
     let profile: ConnectionProfile
     let bookmark: LocationBookmark
 

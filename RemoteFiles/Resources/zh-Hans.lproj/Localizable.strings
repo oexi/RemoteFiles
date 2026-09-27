@@ -301,3 +301,13 @@
 "Protocol session established." = "已建立协议会话。";
 "Read %lld item(s) from %@." = "已从 %2$@ 读取 %1$lld 个项目。";
 "Read-only/basic provider" = "只读/基础功能";
+"Recent Files" = "最近打开";
+"No Recent Files" = "没有最近打开的文件";
+"Files you open appear here." = "打开过的文件会显示在这里。";
+"Clear Recent Files?" = "清除最近打开记录？";
+"Clear Recent Files" = "清除最近打开记录";
+"Today" = "今天";
+"Yesterday" = "昨天";
+"Earlier" = "更早";
+"Remember Recent Files" = "记录最近打开的文件";
+"Files you open are listed under Recent Files on the Files tab. Turning this off also clears the list." = "打开过的文件会列在“文件”页的“最近打开”中。关闭此选项会同时清除已有记录。";

@@ -301,3 +301,13 @@
 "Protocol session established." = "已建立協定工作階段。";
 "Read %lld item(s) from %@." = "已從 %2$@ 讀取 %1$lld 個項目。";
 "Read-only/basic provider" = "唯讀/基本功能";
+"Recent Files" = "最近開啟";
+"No Recent Files" = "沒有最近開啟的檔案";
+"Files you open appear here." = "開啟過的檔案會顯示在這裡。";
+"Clear Recent Files?" = "清除最近開啟紀錄？";
+"Clear Recent Files" = "清除最近開啟紀錄";
+"Today" = "今天";
+"Yesterday" = "昨天";
+"Earlier" = "更早";
+"Remember Recent Files" = "記錄最近開啟的檔案";
+"Files you open are listed under Recent Files on the Files tab. Turning this off also clears the list." = "開啟過的檔案會列在「檔案」頁的「最近開啟」中。關閉此選項會同時清除現有紀錄。";

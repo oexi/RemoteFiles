@@ -301,3 +301,13 @@
 "Protocol session established." = "Protocol session established.";
 "Read %lld item(s) from %@." = "Read %lld item(s) from %@.";
 "Read-only/basic provider" = "Read-only/basic provider";
+"Recent Files" = "Recent Files";
+"No Recent Files" = "No Recent Files";
+"Files you open appear here." = "Files you open appear here.";
+"Clear Recent Files?" = "Clear Recent Files?";
+"Clear Recent Files" = "Clear Recent Files";
+"Today" = "Today";
+"Yesterday" = "Yesterday";
+"Earlier" = "Earlier";
+"Remember Recent Files" = "Remember Recent Files";
+"Files you open are listed under Recent Files on the Files tab. Turning this off also clears the list." = "Files you open are listed under Recent Files on the Files tab. Turning this off also clears the list.";

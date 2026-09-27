@@ -5,6 +5,7 @@ struct FileDetailView: View {
     @EnvironmentObject private var transfers: TransferEngine
     @EnvironmentObject private var offline: OfflineStore
     @EnvironmentObject private var history: LocationHistoryStore
+    @AppStorage(AppPreferenceKey.rememberRecentFiles) private var rememberRecentFiles = true
 
     let provider: any RemoteFileProvider
     let item: RemoteItem
@@ -102,6 +103,7 @@ struct FileDetailView: View {
             AccessControlView(provider: provider, item: item)
         }
         .onAppear {
+            guard rememberRecentFiles else { return }
             history.recordOpened(profileID: provider.profile.id, path: item.path, name: item.name)
         }
     }

@@ -3,7 +3,9 @@ import SwiftUI
 struct SettingsView: View {
     @AppStorage(AppPreferenceKey.appearance) private var appearanceRawValue = AppAppearance.system.rawValue
     @AppStorage(AppPreferenceKey.language) private var languageRawValue = AppLanguage.system.rawValue
+    @AppStorage(AppPreferenceKey.rememberRecentFiles) private var rememberRecentFiles = true
     @EnvironmentObject private var appLock: AppLockManager
+    @EnvironmentObject private var history: LocationHistoryStore
     @State private var cacheUsage: Int64?
     @State private var cacheError: String?
     @State private var isClearingCache = false
@@ -49,6 +51,17 @@ struct SettingsView: View {
                     Text("Security")
                 } footer: {
                     Text("Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock.")
+                }
+
+                Section {
+                    Toggle(isOn: $rememberRecentFiles) {
+                        SettingsLabel("Remember Recent Files", systemImage: "clock.fill", color: .orange)
+                    }
+                    .onChange(of: rememberRecentFiles) { _, remember in
+                        if !remember { history.clearRecents() }
+                    }
+                } footer: {
+                    Text("Files you open are listed under Recent Files on the Files tab. Turning this off also clears the list.")
                 }
 
                 Section {
