@@ -20,9 +20,9 @@ struct AccessControlView: View {
 
                 if let info {
                     Section("Windows Security") {
-                        LabeledContent("Owner SID", value: info.owner ?? "Unavailable")
-                        LabeledContent("Group SID", value: info.group ?? "Unavailable")
-                        LabeledContent("Inheritance", value: info.daclProtected ? "Protected" : "Inherited / inheritable")
+                        LabeledContent("Owner SID", value: info.owner ?? String(localized: "Unavailable"))
+                        LabeledContent("Group SID", value: info.group ?? String(localized: "Unavailable"))
+                        LabeledContent("Inheritance", value: info.daclProtected ? String(localized: "Protected") : String(localized: "Inherited / inheritable"))
                     }
 
                     Section("Access Control Entries") {

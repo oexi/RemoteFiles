@@ -96,7 +96,7 @@ struct OfflineDetailView: View {
         defer { working = false }
         do {
             try await offline.copyToServer(item, destination: profile, folder: folder, transfers: transfers)
-            message = "Copied to \(profile.name)."
+            message = String(localized: "Copied to \(profile.name).")
         } catch {
             message = error.localizedDescription
         }

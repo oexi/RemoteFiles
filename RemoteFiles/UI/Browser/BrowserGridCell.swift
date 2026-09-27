@@ -61,6 +61,13 @@ struct BrowserGridCell: View {
         }
         .frame(maxWidth: .infinity, alignment: .top)
         .padding(.vertical, 6)
+        .padding(.horizontal, 4)
+        .background {
+            if selected == true {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.15))
+            }
+        }
         .contentShape(Rectangle())
         .task(id: item.id) {
             guard let provider, ThumbnailStore.shared.canThumbnail(item) else { return }

@@ -63,10 +63,10 @@ struct RemoteEditorView: View {
             let url = try await CacheManager.shared.materialize(provider: provider, item: current, forceRefresh: true)
             let data = try Data(contentsOf: url)
             guard data.count <= 20 * 1024 * 1024 else {
-                throw RemoteProviderError.unsupported("Text files larger than 20 MB are not opened in the editor.")
+                throw RemoteProviderError.unsupported(String(localized: "Text files larger than 20 MB are not opened in the editor."))
             }
             guard let decoded = TextFileDetector.decodeText(data) else {
-                throw RemoteProviderError.unsupported("This appears to be a binary file, so it is not opened as text.")
+                throw RemoteProviderError.unsupported(String(localized: "This appears to be a binary file, so it is not opened as text."))
             }
             localURL = url
             text = decoded.text

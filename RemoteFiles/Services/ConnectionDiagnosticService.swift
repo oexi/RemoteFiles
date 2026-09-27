@@ -20,24 +20,24 @@ enum ConnectionDiagnosticService {
         do {
             endpoint = try diagnosticEndpoint(for: profile)
         } catch {
-            return [DiagnosticStep(title: "Configuration", status: .failed, detail: error.localizedDescription)]
+            return [DiagnosticStep(title: String(localized: "Configuration"), status: .failed, detail: error.localizedDescription)]
         }
-        steps.append(.init(title: "Configuration", status: .passed, detail: "\(endpoint.host):\(endpoint.port)"))
+        steps.append(.init(title: String(localized: "Configuration"), status: .passed, detail: "\(endpoint.host):\(endpoint.port)"))
 
         if profile.protocolType == .smb && profile.smbTransport == .quic {
             // QUIC runs over UDP, so a TCP probe says nothing about it; the
             // authentication step below shows whether the server answered.
-            steps.append(.init(title: "Network", status: .passed, detail: "Skipped for SMB over QUIC (UDP)."))
+            steps.append(.init(title: String(localized: "Network"), status: .passed, detail: String(localized: "Skipped for SMB over QUIC (UDP).")))
         } else {
             do {
                 let latency = try await tcpProbe(host: endpoint.host, port: endpoint.port)
                 steps.append(.init(
-                    title: "Network",
+                    title: String(localized: "Network"),
                     status: .passed,
-                    detail: String(format: "DNS/TCP reachable in %.0f ms", latency * 1000)
+                    detail: String(localized: "DNS/TCP reachable in \(Int((latency * 1000).rounded())) ms")
                 ))
             } catch {
-                steps.append(.init(title: "Network", status: .failed, detail: error.localizedDescription))
+                steps.append(.init(title: String(localized: "Network"), status: .failed, detail: error.localizedDescription))
                 return steps
             }
         }
@@ -45,14 +45,14 @@ enum ConnectionDiagnosticService {
         do {
             let provider = try ProviderFactory.make(for: profile, credential: credential)
             try await provider.connect()
-            steps.append(.init(title: "Authentication", status: .passed, detail: "Protocol session established."))
+            steps.append(.init(title: String(localized: "Authentication"), status: .passed, detail: String(localized: "Protocol session established.")))
 
             if let smb = provider as? SMBProvider {
                 do {
                     let summary = try await smb.sessionSummary()
-                    steps.append(.init(title: "SMB Session", status: .passed, detail: summary.detail))
+                    steps.append(.init(title: String(localized: "SMB Session"), status: .passed, detail: summary.detail))
                 } catch {
-                    steps.append(.init(title: "SMB Session", status: .failed, detail: error.localizedDescription))
+                    steps.append(.init(title: String(localized: "SMB Session"), status: .failed, detail: error.localizedDescription))
                 }
             }
 
@@ -60,23 +60,23 @@ enum ConnectionDiagnosticService {
                 let path = RemotePath.normalize(profile.protocolType == .nfs ? profile.initialPath : profile.initialPath)
                 let items = try await provider.list(path: path)
                 steps.append(.init(
-                    title: "Directory Access",
+                    title: String(localized: "Directory Access"),
                     status: .passed,
-                    detail: "Read \(items.count) item\(items.count == 1 ? "" : "s") from \(path)."
+                    detail: String(localized: "Read \(items.count) item(s) from \(path).")
                 ))
             } catch {
-                steps.append(.init(title: "Directory Access", status: .failed, detail: error.localizedDescription))
+                steps.append(.init(title: String(localized: "Directory Access"), status: .failed, detail: error.localizedDescription))
             }
 
             let capabilities = provider.capabilities.values.map(\.rawValue).sorted().joined(separator: ", ")
             steps.append(.init(
-                title: "Capabilities",
+                title: String(localized: "Capabilities"),
                 status: .passed,
-                detail: capabilities.isEmpty ? "Read-only/basic provider" : capabilities
+                detail: capabilities.isEmpty ? String(localized: "Read-only/basic provider") : capabilities
             ))
             await provider.disconnect()
         } catch {
-            steps.append(.init(title: "Authentication", status: .failed, detail: error.localizedDescription))
+            steps.append(.init(title: String(localized: "Authentication"), status: .failed, detail: error.localizedDescription))
         }
         return steps
     }

@@ -17,7 +17,7 @@ struct ConnectionDiagnosticView: View {
                 ForEach(steps) { step in
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: icon(step.status))
-                            .foregroundStyle(step.status == .failed ? .red : .green)
+                            .foregroundStyle(color(step.status))
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(step.title).font(.headline)
@@ -36,6 +36,14 @@ struct ConnectionDiagnosticView: View {
                 steps = await ConnectionDiagnosticService.run(profile: profile, credential: credential)
                 running = false
             }
+        }
+    }
+
+    private func color(_ status: DiagnosticStatus) -> Color {
+        switch status {
+        case .running: .secondary
+        case .passed: .green
+        case .failed: .red
         }
     }
 

@@ -139,9 +139,17 @@ final class BrowserViewModel: ObservableObject {
         await refresh()
     }
 
+    /// Opens a folder by path, as the path bar does for an enclosing folder.
+    func open(path: String) async {
+        let path = RemotePath.normalize(path)
+        guard path != currentPath else { return }
+        navigate(to: path)
+        await refresh()
+    }
+
     func createFolder(name: String) async {
         guard let name = validatedName(name) else {
-            errorMessage = "The name must be a single path component and cannot be empty, '.', '..', contain '/', or contain a null character."
+            errorMessage = String(localized: "The name must be a single path component and cannot be empty, '.', '..', contain '/', or contain a null character.")
             return
         }
         guard let provider else { return }
@@ -184,7 +192,7 @@ final class BrowserViewModel: ObservableObject {
 
     func rename(_ item: RemoteItem, to newName: String) async {
         guard let name = validatedName(newName) else {
-            errorMessage = "The name must be a single path component and cannot be empty, '.', '..', contain '/', or contain a null character."
+            errorMessage = String(localized: "The name must be a single path component and cannot be empty, '.', '..', contain '/', or contain a null character.")
             return
         }
         guard let provider else { return }

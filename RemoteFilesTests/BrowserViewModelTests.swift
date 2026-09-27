@@ -40,6 +40,34 @@ final class BrowserViewModelTests: XCTestCase {
         XCTAssertEqual(model.items.map(\.path), ["/fast/file.txt"])
     }
 
+    func testOpenPathJumpsToEnclosingFolder() async throws {
+        let storage = MemoryRemoteProvider.Storage()
+        storage.makeDirectory("/a")
+        storage.makeDirectory("/a/b")
+        storage.write("/a/b/c.txt", Data("c".utf8))
+        var profile = ConnectionProfile.empty(for: .sftp)
+        profile.initialPath = "/a/b"
+        let provider = MemoryRemoteProvider(profile: profile, storage: storage)
+        let model = BrowserViewModel(profile: profile, makeProvider: { _ in provider })
+        await model.start()
+        XCTAssertEqual(model.items.map(\.name), ["c.txt"])
+
+        await model.open(path: "/a/")
+
+        XCTAssertEqual(model.currentPath, "/a")
+        XCTAssertEqual(model.items.map(\.name), ["b"])
+        XCTAssertNil(model.errorMessage)
+    }
+
+    func testPathCrumbsListEveryEnclosingFolder() {
+        XCTAssertEqual(PathCrumb.crumbs(for: "/").map(\.path), ["/"])
+        XCTAssertEqual(
+            PathCrumb.crumbs(for: "/srv//media/").map(\.path),
+            ["/", "/srv", "/srv/media"]
+        )
+        XCTAssertEqual(PathCrumb.crumbs(for: "/srv/media").map(\.name), ["/", "srv", "media"])
+    }
+
     func testSupersededListingFailureIsNotReported() async throws {
         let provider = GatedListProvider()
         let model = BrowserViewModel(profile: rootProfile(), makeProvider: { _ in provider })

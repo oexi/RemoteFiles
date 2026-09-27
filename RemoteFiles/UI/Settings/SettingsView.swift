@@ -12,32 +12,37 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section("Appearance") {
-                    Picker("Theme", selection: $appearanceRawValue) {
+                    Picker(selection: $appearanceRawValue) {
                         ForEach(AppAppearance.allCases) { appearance in
                             Text(appearance.title).tag(appearance.rawValue)
                         }
+                    } label: {
+                        SettingsLabel("Theme", systemImage: "circle.lefthalf.filled", color: .indigo)
                     }
-                }
-
-                Section("Language") {
-                    Picker("Language", selection: $languageRawValue) {
+                    Picker(selection: $languageRawValue) {
                         ForEach(AppLanguage.allCases) { language in
                             Text(language.title).tag(language.rawValue)
                         }
+                    } label: {
+                        SettingsLabel("Language", systemImage: "globe", color: .blue)
                     }
                 }
 
                 Section {
-                    Toggle("App Lock", isOn: Binding(
+                    Toggle(isOn: Binding(
                         get: { appLock.isEnabled },
                         set: { enabled in Task { await appLock.setEnabled(enabled) } }
-                    ))
+                    )) {
+                        SettingsLabel("App Lock", systemImage: "lock.fill", color: .green)
+                    }
                     .disabled(!appLock.isEnabled && !appLock.canAuthenticate)
                     if appLock.isEnabled {
-                        Picker("Require Unlock", selection: $appLock.timeout) {
+                        Picker(selection: $appLock.timeout) {
                             ForEach(AppLockTimeout.allCases) { timeout in
                                 Text(timeout.title).tag(timeout)
                             }
+                        } label: {
+                            SettingsLabel("Require Unlock", systemImage: "timer", color: .orange)
                         }
                     }
                 } header: {
@@ -46,46 +51,52 @@ struct SettingsView: View {
                     Text("Uses Face ID, Touch ID or the device passcode. Transfers keep running while the app is locked. The Files app is not covered by the app lock.")
                 }
 
-                Section("About") {
-                    LabeledContent("Version", value: AppVersion.short)
-                    LabeledContent("Build", value: AppVersion.build)
-                    LabeledContent("File Icons", value: "WhiteSur · GPL-3.0")
-                }
-
-                Section("Protocols") {
-                    Text("FTP, FTPS, SFTP, SMB, WebDAV and NFS")
-                }
-
-                Section("Cache") {
-                    LabeledContent("Cache Usage") {
+                Section {
+                    LabeledContent {
                         if let cacheUsage {
                             Text(ByteCountFormatter.string(fromByteCount: cacheUsage, countStyle: .file))
-                        } else {
-                            Text("Calculating…")
-                                .foregroundStyle(.secondary)
+                        } else if cacheError == nil {
+                            ProgressView()
                         }
+                    } label: {
+                        SettingsLabel("Cache Usage", systemImage: "internaldrive.fill", color: .gray)
                     }
 
-                    Text("Cached previews and materialized files. Offline files and active transfers are not affected.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    Button("Clear Cache", role: .destructive) {
+                    Button(role: .destructive) {
                         Task { @MainActor in
                             await clearCache()
                         }
+                    } label: {
+                        HStack {
+                            Text("Clear Cache")
+                            Spacer()
+                            if isClearingCache {
+                                ProgressView()
+                            }
+                        }
                     }
                     .disabled(isClearingCache)
-
-                    if isClearingCache {
-                        ProgressView()
-                    }
 
                     if let cacheError {
                         Text(cacheError)
                             .font(.footnote)
                             .foregroundStyle(.red)
                     }
+                } header: {
+                    Text("Cache")
+                } footer: {
+                    Text("Cached previews and materialized files. Offline files and active transfers are not affected.")
+                }
+
+                Section("About") {
+                    LabeledContent("Version") {
+                        Text(verbatim: "\(AppVersion.short) (\(AppVersion.build))")
+                    }
+                    LabeledContent("Protocols") {
+                        Text(verbatim: "FTP · FTPS · SFTP · SMB · WebDAV · NFS")
+                            .multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("File Icons", value: "WhiteSur · GPL-3.0")
                 }
             }
             .navigationTitle("Settings")

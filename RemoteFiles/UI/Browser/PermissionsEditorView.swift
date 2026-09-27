@@ -78,7 +78,7 @@ struct PermissionsEditorView: View {
         do {
             let refreshed = try await provider.attributes(path: item.path)
             guard let mode = refreshed.permissions ?? item.permissions else {
-                throw RemoteProviderError.unsupported("This server did not return Unix permission bits for the item.")
+                throw RemoteProviderError.unsupported(String(localized: "This server did not return Unix permission bits for the item."))
             }
             modeText = String(format: "%04o", mode & 0o7777)
         } catch {

@@ -64,10 +64,7 @@ struct BrowserView: View {
                         Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
                         currentFolderFavoriteButton
                         if !clipboard.isEmpty, model.capabilities.contains(.write) {
-                            Button(
-                                "Paste \(clipboard.items.count == 1 ? clipboard.items[0].name : "\(clipboard.items.count) Items")",
-                                systemImage: "doc.on.clipboard"
-                            ) {
+                            Button(pasteTitle, systemImage: "doc.on.clipboard") {
                                 searchFocused = false
                                 Task { await model.paste(clipboard, using: connections, transfers: transfers) }
                             }
@@ -101,6 +98,12 @@ struct BrowserView: View {
             endSelection()
         }
         .task { await model.start() }
+    }
+
+    private var pasteTitle: LocalizedStringKey {
+        clipboard.items.count == 1
+            ? "Paste “\(clipboard.items[0].name)”"
+            : "Paste \(clipboard.items.count) Items"
     }
 
     private var currentFolderFavoriteButton: some View {
@@ -365,12 +368,7 @@ struct BrowserView: View {
     private var browserHeader: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: "folder")
-                Text(model.currentPath)
-                    .font(.caption)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
+                pathBar
                 if model.uploading || model.loading {
                     ProgressView()
                         .controlSize(.small)
@@ -406,6 +404,57 @@ struct BrowserView: View {
         .background(.bar)
     }
 
+    /// The current folder's path as tappable crumbs, scrolled so the current
+    /// folder stays visible; tapping an enclosing folder opens it.
+    private var pathBar: some View {
+        let crumbs = PathCrumb.crumbs(for: model.currentPath)
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    ForEach(crumbs) { crumb in
+                        if crumb.path != "/" {
+                            Image(systemName: "chevron.compact.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
+                        }
+                        pathCrumbButton(crumb, isCurrent: crumb.path == model.currentPath)
+                            .id(crumb.path)
+                    }
+                }
+            }
+            .onAppear { proxy.scrollTo(model.currentPath, anchor: .trailing) }
+            .onChange(of: model.currentPath) { _, path in
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(path, anchor: .trailing) }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func pathCrumbButton(_ crumb: PathCrumb, isCurrent: Bool) -> some View {
+        Button {
+            searchFocused = false
+            Task { await model.open(path: crumb.path) }
+        } label: {
+            Group {
+                if crumb.path == "/" {
+                    Image(systemName: "externaldrive.fill")
+                        .accessibilityLabel(Text(verbatim: model.profile.name))
+                } else {
+                    Text(verbatim: crumb.name)
+                        .lineLimit(1)
+                }
+            }
+            .font(.footnote.weight(isCurrent ? .semibold : .regular))
+            .foregroundStyle(isCurrent ? Color.primary : Color.accentColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+
     @ViewBuilder
     private var fileList: some View {
         if model.items.isEmpty {
@@ -430,7 +479,7 @@ struct BrowserView: View {
                 ContentUnavailableView(
                     "Empty Folder",
                     systemImage: "folder",
-                    description: Text(model.currentPath)
+                    description: Text(verbatim: model.currentPath)
                 )
                 .allowsHitTesting(false)
             }
@@ -742,7 +791,9 @@ struct BrowserView: View {
             FileRow(
                 item: item,
                 provider: model.provider,
-                displaySize: item.isFolderLike ? nil : item.size
+                displaySize: item.isFolderLike ? nil : item.size,
+                // Files open through a NavigationLink, which draws its own chevron.
+                showsDisclosure: item.isFolderLike
             )
         }
     }
@@ -773,10 +824,28 @@ struct BrowserView: View {
     }
 }
 
+struct PathCrumb: Identifiable, Equatable {
+    let name: String
+    let path: String
+    var id: String { path }
+
+    /// The root followed by every enclosing folder of `path`, ending with `path` itself.
+    static func crumbs(for path: String) -> [PathCrumb] {
+        var crumbs = [PathCrumb(name: "/", path: "/")]
+        var current = ""
+        for component in RemotePath.normalize(path).split(separator: "/") {
+            current += "/" + component
+            crumbs.append(PathCrumb(name: String(component), path: current))
+        }
+        return crumbs
+    }
+}
+
 private struct FileRow: View {
     let item: RemoteItem
     let provider: (any RemoteFileProvider)?
     let displaySize: Int64?
+    var showsDisclosure = false
     @State private var thumbnail: UIImage?
 
     var body: some View {
@@ -826,6 +895,13 @@ private struct FileRow: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            }
+            if showsDisclosure {
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.forward")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
             }
         }
         .contentShape(Rectangle())

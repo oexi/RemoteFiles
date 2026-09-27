@@ -140,15 +140,14 @@ struct CopyDestinationView: View {
                         dismiss()
                     }
                 } label: {
-                    Label {
+                    HStack(spacing: 12) {
+                        ProtocolBadge(protocolType: profile.protocolType)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(profile.name)
-                            Text("\(profile.protocolType.title) · \(RemotePath.normalize(profile.initialPath))")
+                            Text(verbatim: "\(profile.protocolType.title) · \(RemotePath.normalize(profile.initialPath))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                    } icon: {
-                        Image(systemName: profile.protocolType.systemImage)
                     }
                 }
             }

@@ -11,7 +11,7 @@ struct ConnectionEditorView: View {
     @State private var showingPrivateKeyImporter = false
     @State private var showingDiagnostics = false
     @State private var testing = false
-    @State private var testMessage: String?
+    @State private var notice: EditorNotice?
     @StateObject private var lanBrowser = LANServiceBrowser()
     @State private var resolvingServerID: String?
     /// The name last filled in from a nearby server, so picking another server
@@ -125,7 +125,7 @@ struct ConnectionEditorView: View {
                             .foregroundStyle(.secondary)
                         Button("Reset Trusted Host Key", role: .destructive) {
                             SSHHostKeyStore().remove(host: profile.host, port: profile.port)
-                            testMessage = "Trusted SSH host key reset. Verify the server before reconnecting."
+                            notice = .info(String(localized: "Trusted SSH host key reset. Verify the server before reconnecting."))
                         }
                         .disabled(profile.host.isEmpty)
                     }
@@ -156,13 +156,25 @@ struct ConnectionEditorView: View {
                 }
 
                 Section {
-                    Button(testing ? "Testing…" : "Test Connection") { Task { await testConnection() } }
-                        .disabled(testing || profile.host.isEmpty)
+                    Button {
+                        Task { await testConnection() }
+                    } label: {
+                        HStack {
+                            Label(testing ? LocalizedStringKey("Testing…") : LocalizedStringKey("Test Connection"), systemImage: "bolt.horizontal")
+                            Spacer()
+                            if testing { ProgressView() }
+                        }
+                    }
+                    .disabled(testing || profile.host.isEmpty)
                     Button("Run Diagnostics", systemImage: "stethoscope") {
                         showingDiagnostics = true
                     }
                     .disabled(profile.host.isEmpty)
-                    if let testMessage { Text(testMessage).font(.footnote) }
+                    if let notice {
+                        Label(notice.text, systemImage: notice.kind.systemImage)
+                            .font(.footnote)
+                            .foregroundStyle(notice.kind.color)
+                    }
                 }
             }
             .navigationTitle("Connection")
@@ -182,7 +194,7 @@ struct ConnectionEditorView: View {
                             ))
                             dismiss()
                         } catch {
-                            testMessage = error.localizedDescription
+                            notice = .failure(error)
                         }
                     }
                     .disabled(profile.name.isEmpty || profile.host.isEmpty)
@@ -262,9 +274,9 @@ struct ConnectionEditorView: View {
         do {
             let endpoint = try WebDAVProvider(profile: profile, credential: nil).trustEndpoint()
             TLSCertificatePinStore().remove(host: endpoint.host, port: endpoint.port)
-            testMessage = String(localized: "Trusted certificate forgotten. Verify the server before reconnecting.")
+            notice = .info(String(localized: "Trusted certificate forgotten. Verify the server before reconnecting."))
         } catch {
-            testMessage = error.localizedDescription
+            notice = .failure(error)
         }
     }
 
@@ -280,9 +292,9 @@ struct ConnectionEditorView: View {
             _ = try SSHPrivateKeyLoader.detectKind(keyString)
             privateKey = data
             privateKeyName = url.lastPathComponent
-            testMessage = "Private key imported. Test the connection before saving."
+            notice = .success(String(localized: "Private key imported. Test the connection before saving."))
         } catch {
-            testMessage = error.localizedDescription
+            notice = .failure(error)
         }
     }
 
@@ -357,8 +369,7 @@ struct ConnectionEditorView: View {
                         Task { await useNearbyServer(server) }
                     } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: server.protocolType.systemImage)
-                                .frame(width: 24)
+                            ProtocolBadge(protocolType: server.protocolType, size: 26)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(server.name)
                                 Text(server.useTLS ? "\(server.protocolType.title) (HTTPS)" : server.protocolType.title)
@@ -395,7 +406,7 @@ struct ConnectionEditorView: View {
         } catch is CancellationError {
             return
         } catch {
-            testMessage = error.localizedDescription
+            notice = .failure(error)
         }
     }
 
@@ -423,13 +434,13 @@ struct ConnectionEditorView: View {
         } catch is CancellationError {
             return
         } catch {
-            testMessage = error.localizedDescription
+            notice = .failure(error)
         }
     }
 
     private func testConnection() async {
         testing = true
-        testMessage = nil
+        notice = nil
         do {
             let credential = Credential(
                 username: profile.username,
@@ -441,14 +452,43 @@ struct ConnectionEditorView: View {
             let provider = try ProviderFactory.make(for: profile, credential: credential)
             try await provider.connect()
             await provider.disconnect()
-            testMessage = "Connection successful."
+            notice = .success(String(localized: "Connection successful."))
         } catch {
-            testMessage = error.localizedDescription
+            notice = .failure(error)
         }
         testing = false
     }
 }
 
+/// Feedback shown below the connection test buttons.
+private struct EditorNotice {
+    enum Kind {
+        case info, success, failure
+
+        var systemImage: String {
+            switch self {
+            case .info: "info.circle.fill"
+            case .success: "checkmark.circle.fill"
+            case .failure: "exclamationmark.triangle.fill"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .info: .secondary
+            case .success: .green
+            case .failure: .red
+            }
+        }
+    }
+
+    let kind: Kind
+    let text: String
+
+    static func info(_ text: String) -> Self { Self(kind: .info, text: text) }
+    static func success(_ text: String) -> Self { Self(kind: .success, text: text) }
+    static func failure(_ error: Error) -> Self { Self(kind: .failure, text: error.localizedDescription) }
+}
 
 private struct SMBSharePicker: View {
     @Environment(\.dismiss) private var dismiss
