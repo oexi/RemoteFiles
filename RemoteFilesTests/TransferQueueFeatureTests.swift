@@ -16,6 +16,42 @@ final class TransferQueueFeatureTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
+    func testOldestCompletedRecordsArePrunedBeyondTheLimit() async throws {
+        let profile = ConnectionProfile.empty(for: .sftp)
+        let history: [TransferRecord] = (0..<TransferEngine.maxCompletedRecords).map { index in
+            var record = TransferRecord(
+                fileName: "old-\(index).txt",
+                sourceProfileID: profile.id,
+                sourcePath: "/old-\(index).txt",
+                destinationProfileID: profile.id,
+                destinationPath: "/old-\(index).txt",
+                overwrite: false,
+                source: "source",
+                destination: "destination",
+                kind: .upload
+            )
+            record.state = .completed
+            return record
+        }
+        let transfersURL = directory.appendingPathComponent("transfers.json")
+        try JSONEncoder().encode(history).write(to: transfersURL)
+        let engine = TransferEngine(fileURL: transfersURL)
+        XCTAssertEqual(engine.records.count, TransferEngine.maxCompletedRecords)
+
+        let storage = MemoryRemoteProvider.Storage()
+        let provider = MemoryRemoteProvider(profile: profile, storage: storage)
+        let local = directory.appendingPathComponent("new.txt")
+        try Data("new".utf8).write(to: local)
+        try await engine.uploadFile(localURL: local, to: provider, destinationPath: "/new.txt")
+
+        XCTAssertEqual(engine.records.count, TransferEngine.maxCompletedRecords)
+        XCTAssertEqual(engine.records.first?.fileName, "new.txt")
+        XCTAssertFalse(engine.records.contains { $0.id == history.last?.id })
+        let restored = TransferEngine(fileURL: transfersURL)
+        XCTAssertEqual(restored.records.count, TransferEngine.maxCompletedRecords)
+        XCTAssertEqual(restored.records.first?.state, .completed)
+    }
+
     func testRemovingUnfinishedServerTransferDeletesItsPartial() async throws {
         let storage = MemoryRemoteProvider.Storage()
         let destinationProfile = ConnectionProfile.empty(for: .sftp)

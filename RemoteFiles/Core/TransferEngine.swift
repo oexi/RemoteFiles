@@ -6,6 +6,11 @@ private struct TransferPausedError: Error, Sendable { }
 @MainActor
 final class TransferEngine: ObservableObject {
     @Published private(set) var records: [TransferRecord] = []
+    /// Multi-file operations (folder uploads and copies, offline folders) in
+    /// progress. Between two of their files no record is active, so this
+    /// keeps the app's background time and "all done" notification from
+    /// firing halfway through.
+    @Published private(set) var activeBatches = 0
     private struct ActiveTask {
         let token: TransferExecutionToken
         let task: Task<Void, Never>
@@ -27,6 +32,10 @@ final class TransferEngine: ObservableObject {
     private static let progressUpdateBytes: UInt64 = 512 * 1024
     private static let progressByteUpdateInterval: TimeInterval = 0.05
     private static let progressPersistenceDelay: UInt64 = 750_000_000
+    /// Completed records kept in the list and in transfers.json. A folder
+    /// upload adds one record per file and every durable write encodes the
+    /// whole list, so the oldest completed records are dropped beyond this.
+    static let maxCompletedRecords = 200
 
     private var tasks: [UUID: ActiveTask] = [:]
     private var executionOwnership: [UUID: TransferExecutionOwnership] = [:]
@@ -54,6 +63,14 @@ final class TransferEngine: ObservableObject {
         let directory = self.fileURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         load()
+    }
+
+    func beginBatch() {
+        activeBatches += 1
+    }
+
+    func endBatch() {
+        activeBatches = max(0, activeBatches - 1)
     }
 
     @discardableResult
@@ -101,6 +118,8 @@ final class TransferEngine: ObservableObject {
         destinationDirectory: String,
         removeSources: Bool = false
     ) async throws -> Bool {
+        beginBatch()
+        defer { endBatch() }
         let source = try makeProvider(sourceProfile)
         let destination = try makeProvider(destinationProfile)
         defer {
@@ -215,7 +234,9 @@ final class TransferEngine: ObservableObject {
                 && destination is any RemoteChunkWritableProvider
         )
         records.insert(record, at: 0)
-        persistNow()
+        // A local transfer interrupted by a crash is never resumed, and its
+        // first state change is written at once, so the insert can wait.
+        schedulePersistence()
         await startLocalTransfer(record: record) { [weak self] token in
             guard let self else { return }
             try await self.performUpload(
@@ -341,7 +362,7 @@ final class TransferEngine: ObservableObject {
                 && source is any RemoteChunkReadableProvider
         )
         records.insert(record, at: 0)
-        persistNow()
+        schedulePersistence()
         await startLocalTransfer(record: record) { [weak self] token in
             guard let self else { return }
             try await self.performDownload(
@@ -1232,8 +1253,53 @@ final class TransferEngine: ObservableObject {
         // below (for example progress = 1 on terminal completion).
         progressSnapshots[id] = nil
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
+        let before = records[index]
         mutation(&records[index])
+        let after = records[index]
+        if Self.onlyProgressChanged(from: before, to: after) {
+            schedulePersistence()
+            return
+        }
+        if before.state != .completed, after.state == .completed {
+            pruneCompletedRecords()
+        }
         persistNow()
+    }
+
+    /// Progress and speed are rewritten continuously and are cheap to lose in
+    /// a crash. Everything else (state, commit markers, retained sources)
+    /// must reach disk before the transfer moves on.
+    private static func onlyProgressChanged(from before: TransferRecord, to after: TransferRecord) -> Bool {
+        guard after.state == .running || after.state == .queued else { return false }
+        var normalized = after
+        normalized.progress = before.progress
+        normalized.transferredBytes = before.transferredBytes
+        normalized.totalBytes = before.totalBytes
+        normalized.bytesPerSecond = before.bytesPerSecond
+        normalized.startedAt = before.startedAt
+        return normalized == before
+    }
+
+    private func pruneCompletedRecords() {
+        var completedSeen = 0
+        var removed: Set<UUID> = []
+        // Records are newest first.
+        for record in records where record.state == .completed {
+            completedSeen += 1
+            if completedSeen > Self.maxCompletedRecords, tasks[record.id] == nil {
+                removed.insert(record.id)
+            }
+        }
+        guard !removed.isEmpty else { return }
+        records.removeAll { removed.contains($0.id) }
+        for id in removed {
+            progressSnapshots[id] = nil
+            pendingRetries[id] = nil
+            pauseRequests.remove(id)
+            committing.remove(id)
+            finalizedTransfers.remove(id)
+            executionOwnership[id] = nil
+        }
     }
 
     private func startLocalTransfer(
@@ -1328,6 +1394,7 @@ final class TransferEngine: ObservableObject {
         records[index].errorMessage = nil
         records[index].commitPending = false
         records[index].commitDestinationExisted = nil
+        pruneCompletedRecords()
         persistNow()
         return true
     }

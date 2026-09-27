@@ -162,7 +162,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 let parentPath = try identityStore.path(for: itemTemplate.parentItemIdentifier, codec: codec)
                 let path = try codec.childPath(parent: parentPath, filename: itemTemplate.filename)
                 if itemTemplate.contentType?.conforms(to: .folder) == true {
-                    try await provider.createDirectory(path: path)
+                    do {
+                        try await provider.createDirectory(path: path)
+                    } catch let createError {
+                        // Servers report an existing name with assorted errors.
+                        // A folder that is already there is what the system
+                        // asked for when it allows that; anything else there
+                        // is a name collision the Files app can resolve.
+                        guard let existing = try? await provider.attributes(path: path) else {
+                            throw createError
+                        }
+                        guard existing.isDirectory, options.contains(.mayAlreadyExist) else {
+                            throw NSFileProviderError(.filenameCollision)
+                        }
+                    }
                 } else if let url {
                     try await provider.upload(from: url, to: path, overwrite: options.contains(.mayAlreadyExist))
                 } else {
@@ -288,6 +301,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 )
                 guard fileProviderVersionMatches(currentItem.itemVersion, version) else {
                     throw NSFileProviderError(.cannotSynchronize)
+                }
+                // Without `.recursive` the system expects a non-empty folder
+                // to be refused rather than deleted with everything inside.
+                if remote.isDirectory, !options.contains(.recursive) {
+                    let children = try await provider.list(path: path)
+                    guard children.isEmpty else { throw NSFileProviderError(.directoryNotEmpty) }
                 }
                 try await RemoteFileOperations.removeRecursively(remote, provider: provider)
                 try identityStore.remove(

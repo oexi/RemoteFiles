@@ -1,39 +1,6 @@
 import Foundation
 
 enum RemoteFileOperations {
-    static func copyRecursively(
-        _ item: RemoteItem,
-        from source: any RemoteFileProvider,
-        to destination: any RemoteFileProvider,
-        destinationPath: String
-    ) async throws {
-        try Task.checkCancellation()
-        if item.isDirectory {
-            try await destination.createDirectory(path: destinationPath)
-            let children = try await source.list(path: item.path)
-            for child in children {
-                try Task.checkCancellation()
-                try await copyRecursively(
-                    child,
-                    from: source,
-                    to: destination,
-                    destinationPath: RemotePath.join(destinationPath, child.name)
-                )
-            }
-            return
-        }
-
-        let tempRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("RemoteFiles-Clipboard", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
-        let tempURL = tempRoot.appendingPathComponent(item.name)
-        defer { try? FileManager.default.removeItem(at: tempRoot) }
-        try await source.download(path: item.path, to: tempURL)
-        try Task.checkCancellation()
-        try await destination.upload(from: tempURL, to: destinationPath, overwrite: false)
-    }
-
     /// Replaces the contents of a remote file without leaving it truncated if
     /// the connection drops mid-write: the new contents are uploaded next to
     /// the file first and swapped in with renames once complete. Unix

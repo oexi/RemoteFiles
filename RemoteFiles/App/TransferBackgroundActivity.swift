@@ -15,33 +15,48 @@ final class TransferBackgroundActivity: ObservableObject {
     private var cancellable: AnyCancellable?
     private var previousStates: [UUID: TransferState] = [:]
     private var requestedAuthorization = false
+    /// Transfers that finished while the app was in the background, reported
+    /// together once everything is done instead of one notification each.
+    private var finishedInBackground: (completed: Int, failed: Int, lastName: String?) = (0, 0, nil)
 
     func attach(to engine: TransferEngine) {
         guard cancellable == nil else { return }
         previousStates = Dictionary(uniqueKeysWithValues: engine.records.map { ($0.id, $0.state) })
-        cancellable = engine.$records.sink { [weak self] records in
-            self?.recordsChanged(records)
+        cancellable = engine.$records.combineLatest(engine.$activeBatches).sink { [weak self] records, batches in
+            self?.transfersChanged(records, activeBatches: batches)
         }
     }
 
-    private func recordsChanged(_ records: [TransferRecord]) {
-        let active = records.contains { $0.state == .running || $0.state == .queued }
+    private func transfersChanged(_ records: [TransferRecord], activeBatches: Int) {
+        // A folder upload or copy has no active record between two files;
+        // the batch counter keeps it active for its whole run.
+        let active = activeBatches > 0 || records.contains { $0.state == .running || $0.state == .queued }
         if active {
             beginBackgroundTask()
             requestNotificationAuthorizationIfNeeded()
         }
 
-        if UIApplication.shared.applicationState != .active {
+        if UIApplication.shared.applicationState == .active {
+            finishedInBackground = (0, 0, nil)
+        } else {
             for record in records {
                 guard let previous = previousStates[record.id],
-                      previous == .running || previous == .queued,
-                      record.state == .completed || record.state == .failed else { continue }
-                notify(record)
+                      previous == .running || previous == .queued else { continue }
+                if record.state == .completed {
+                    finishedInBackground.completed += 1
+                    finishedInBackground.lastName = record.fileName
+                } else if record.state == .failed {
+                    finishedInBackground.failed += 1
+                    finishedInBackground.lastName = record.fileName
+                }
             }
         }
         previousStates = Dictionary(records.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first })
 
-        if !active { endBackgroundTask() }
+        if !active {
+            notifyFinished()
+            endBackgroundTask()
+        }
     }
 
     private func beginBackgroundTask() {
@@ -62,6 +77,7 @@ final class TransferBackgroundActivity: ObservableObject {
     }
 
     private func backgroundTimeExpired() {
+        notifyFinished()
         post(
             title: String(localized: "Transfers paused"),
             body: String(localized: "iOS suspended RemoteFiles. Open the app to resume or retry unfinished transfers.")
@@ -75,11 +91,26 @@ final class TransferBackgroundActivity: ObservableObject {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    private func notify(_ record: TransferRecord) {
-        if record.state == .completed {
-            post(title: String(localized: "Transfer complete"), body: record.fileName)
-        } else {
-            post(title: String(localized: "Transfer failed"), body: record.fileName)
+    private func notifyFinished() {
+        let (completed, failed, lastName) = finishedInBackground
+        finishedInBackground = (0, 0, nil)
+        switch (completed, failed) {
+        case (0, 0):
+            return
+        case (1, 0):
+            post(title: String(localized: "Transfer complete"), body: lastName ?? "")
+        case (0, 1):
+            post(title: String(localized: "Transfer failed"), body: lastName ?? "")
+        case (_, 0):
+            post(
+                title: String(localized: "Transfers complete"),
+                body: String(localized: "\(completed) transfers completed.")
+            )
+        default:
+            post(
+                title: String(localized: "Transfers finished"),
+                body: String(localized: "\(completed) completed, \(failed) failed. See Transfers for details.")
+            )
         }
     }
 

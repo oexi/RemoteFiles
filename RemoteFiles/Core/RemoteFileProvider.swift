@@ -4,6 +4,9 @@ enum RemoteProviderError: LocalizedError, Sendable {
     case unsupported(String)
     case invalidConfiguration(String)
     case authenticationRequired
+    /// The server refused the operation for these credentials (for example
+    /// HTTP 403), which signing in again does not fix.
+    case permissionDenied
     case notConnected
     case notFound(String)
     case conflict(String)
@@ -14,6 +17,7 @@ enum RemoteProviderError: LocalizedError, Sendable {
         case .unsupported(let message): message
         case .invalidConfiguration(let message): message
         case .authenticationRequired: "Authentication is required."
+        case .permissionDenied: "The server denied permission for this item."
         case .notConnected: "The remote server is not connected."
         case .notFound(let message): message
         case .conflict(let message): message

@@ -64,6 +64,8 @@ livecontainer://sources?url=https%3A%2F%2Fraw.githubusercontent.com%2Foexi%2FRem
 
 > [!NOTE]
 > 发布的 IPA 未签名。SideStore 会在安装时签名；直接安装需自行重签。LiveContainer 不会注册 File Provider 扩展，需要“文件”App 集成时请独立安装。
+>
+> 在 LiveContainer 中运行时，请在 RemoteFiles 的设置里打开“修复文件导入”（Fix File Picker），否则“上传文件夹”在选择器里点“打开”没有反应。
 
 也可以在 [Releases](https://github.com/oexi/RemoteFiles/releases) 下载 IPA。
 

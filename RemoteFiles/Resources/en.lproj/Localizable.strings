@@ -148,6 +148,9 @@
 "Skip All" = "Skip All";
 "Stop Upload" = "Stop Upload";
 "“%@” already exists in this folder." = "“%@” already exists in this folder.";
+"Merge" = "Merge";
+"Merge All" = "Merge All";
+"A folder named “%@” already exists in this folder. Merging puts the uploaded items into it; files with the same name are handled separately." = "A folder named “%@” already exists in this folder. Merging puts the uploaded items into it; files with the same name are handled separately.";
 "%lld file(s) could not be uploaded. Retry them from Transfers." = "%lld file(s) could not be uploaded. Retry them from Transfers.";
 "Some items were not copied. See Transfers for details and to retry them." = "Some items were not copied. See Transfers for details and to retry them.";
 "Back" = "Back";
@@ -159,6 +162,10 @@
 "iOS suspended RemoteFiles. Open the app to resume or retry unfinished transfers." = "iOS suspended RemoteFiles. Open the app to resume or retry unfinished transfers.";
 "Transfer complete" = "Transfer complete";
 "Transfer failed" = "Transfer failed";
+"Transfers complete" = "Transfers complete";
+"Transfers finished" = "Transfers finished";
+"%lld transfers completed." = "%lld transfers completed.";
+"%lld completed, %lld failed. See Transfers for details." = "%lld completed, %lld failed. See Transfers for details.";
 "Import SSH Private Key" = "Import SSH Private Key";
 "Archive" = "Archive";
 "Archive extracted successfully." = "Archive extracted successfully.";

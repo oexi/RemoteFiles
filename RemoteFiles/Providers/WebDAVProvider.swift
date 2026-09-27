@@ -23,9 +23,13 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
         return sessionLock.withLock {
             if let ownedSession { return ownedSession }
             let configuration = URLSessionConfiguration.default
+            // The request timeout covers idle gaps between packets. The
+            // resource timeout caps a whole transfer, so it keeps the system
+            // default (7 days): a 30-minute cap cut off large uploads and
+            // downloads midway. Without a network, fail at once instead of
+            // waiting for connectivity until that cap.
             configuration.timeoutIntervalForRequest = 60
-            configuration.timeoutIntervalForResource = 1800
-            configuration.waitsForConnectivity = true
+            configuration.waitsForConnectivity = false
             let created = URLSession(
                 configuration: configuration,
                 delegate: WebDAVSessionDelegate(profile: profile, credential: credential),
@@ -255,7 +259,8 @@ final class WebDAVProvider: RemoteFileProvider, RemoteChunkReadableProvider, Rem
     private func validate(_ response: URLResponse, allowed: [Int]) throws {
         guard let http = response as? HTTPURLResponse else { throw RemoteProviderError.invalidResponse("Non-HTTP response.") }
         guard allowed.contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 { throw RemoteProviderError.authenticationRequired }
+            if http.statusCode == 401 { throw RemoteProviderError.authenticationRequired }
+            if http.statusCode == 403 { throw RemoteProviderError.permissionDenied }
             if http.statusCode == 404 { throw RemoteProviderError.notFound("The remote item was not found.") }
             if http.statusCode == 409 || http.statusCode == 412 { throw RemoteProviderError.conflict("WebDAV conflict (HTTP \(http.statusCode)).") }
             throw RemoteProviderError.invalidResponse("WebDAV HTTP \(http.statusCode).")

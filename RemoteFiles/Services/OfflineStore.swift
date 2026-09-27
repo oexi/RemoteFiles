@@ -79,6 +79,8 @@ final class OfflineStore: ObservableObject {
 
         let totalSize: Int64?
         if item.isDirectory {
+            transfers.beginBatch()
+            defer { transfers.endBatch() }
             try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
             totalSize = try await downloadDirectory(
                 provider: provider,
@@ -227,6 +229,8 @@ final class OfflineStore: ObservableObject {
                 provider: provider
             )
             if item.directory {
+                transfers.beginBatch()
+                defer { transfers.endBatch() }
                 try await uploadDirectory(
                     localDirectory: localURL(for: item),
                     remotePath: target,
@@ -349,6 +353,9 @@ final class OfflineStore: ObservableObject {
         var total: Int64 = 0
         for child in children {
             try Task.checkCancellation()
+            // A link to a folder is not followed: it may point back up the
+            // tree (or across the whole server) and would never finish.
+            if child.kind == .symbolicLink, child.linkTargetKind == .directory { continue }
             let localName = try validatedLocalName(child.name)
             let localChild = localDirectory.appendingPathComponent(localName, isDirectory: child.isDirectory)
             if child.isDirectory {

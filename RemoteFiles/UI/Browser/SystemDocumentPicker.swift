@@ -5,15 +5,12 @@ import UIKit
 struct SystemDocumentPicker: UIViewControllerRepresentable {
     enum Mode {
         case files
-        case folder
         case privateKey
 
         var contentTypes: [UTType] {
             switch self {
             case .files:
                 return [.item]
-            case .folder:
-                return [.folder]
             case .privateKey:
                 // OpenSSH private keys are commonly extensionless, .pem, or arbitrary
                 // text/data files. `.item` keeps extensionless keys selectable.
@@ -21,22 +18,27 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
             }
         }
 
-        var asCopy: Bool {
-            switch self {
-            case .files, .privateKey:
-                return true
-            case .folder:
-                return false
-            }
-        }
+        /// Both modes copy the picked file into the app, which also works
+        /// under LiveContainer without its file-picker fix.
+        var asCopy: Bool { true }
 
         var allowsMultipleSelection: Bool {
             switch self {
-            case .files, .folder:
+            case .files:
                 return true
             case .privateKey:
                 return false
             }
+        }
+
+        func makeController() -> UIDocumentPickerViewController {
+            let picker = UIDocumentPickerViewController(
+                forOpeningContentTypes: contentTypes,
+                asCopy: asCopy
+            )
+            picker.allowsMultipleSelection = allowsMultipleSelection
+            picker.shouldShowFileExtensions = true
+            return picker
         }
     }
 
@@ -49,13 +51,8 @@ struct SystemDocumentPicker: UIViewControllerRepresentable {
     }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: mode.contentTypes,
-            asCopy: mode.asCopy
-        )
+        let picker = mode.makeController()
         picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = mode.allowsMultipleSelection
-        picker.shouldShowFileExtensions = true
         return picker
     }
 
