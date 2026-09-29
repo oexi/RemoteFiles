@@ -10,12 +10,21 @@
       "subtitle": "FTP, FTPS, SFTP, SMB, WebDAV and NFS file manager",
       "localizedDescription": "Browse and manage remote files on iPhone and iPad. RemoteFiles supports offline files, cross-server transfers, text editing, archive extraction and integration with the iOS Files app.",
       "iconURL": "https://raw.githubusercontent.com/oexi/RemoteFiles/main/RemoteFiles/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
-      "version": "0.7.3",
-      "versionDate": "2026-09-27T09:16:35Z",
-      "versionDescription": "Move recent files off the start page; Polish UI and fill in missing translations",
-      "downloadURL": "https://github.com/oexi/RemoteFiles/releases/download/v0.7.3/RemoteFiles-0.7.3-build34-unsigned.ipa",
-      "size": 44587257,
+      "version": "0.7.4",
+      "versionDate": "2026-09-29T16:08:58Z",
+      "versionDescription": "Call recent files Recents, as the Files app does",
+      "downloadURL": "https://github.com/oexi/RemoteFiles/releases/download/v0.7.4/RemoteFiles-0.7.4-build35-unsigned.ipa",
+      "size": 44587370,
       "versions": [
+        {
+          "version": "0.7.4",
+          "buildVersion": "35",
+          "date": "2026-09-29T16:08:58Z",
+          "localizedDescription": "Call recent files Recents, as the Files app does",
+          "downloadURL": "https://github.com/oexi/RemoteFiles/releases/download/v0.7.4/RemoteFiles-0.7.4-build35-unsigned.ipa",
+          "size": 44587370,
+          "minOSVersion": "17.0"
+        },
         {
           "version": "0.7.3",
           "buildVersion": "34",
